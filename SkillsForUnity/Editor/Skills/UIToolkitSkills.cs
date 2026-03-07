@@ -48,7 +48,14 @@ namespace UnitySkills
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            string fileContent = content ?? (!string.IsNullOrEmpty(ussPath) ? DefaultUxml(ussPath) : DefaultUxml());
+            string relUss = null;
+            if (!string.IsNullOrEmpty(ussPath))
+            {
+                var uxmlDir = Path.GetDirectoryName(savePath)?.Replace('\\', '/') ?? "";
+                var ussDir  = Path.GetDirectoryName(ussPath)?.Replace('\\', '/') ?? "";
+                relUss = (uxmlDir == ussDir) ? Path.GetFileName(ussPath) : ussPath;
+            }
+            string fileContent = content ?? (relUss != null ? DefaultUxml(relUss) : DefaultUxml());
             File.WriteAllText(savePath, fileContent, System.Text.Encoding.UTF8);
             AssetDatabase.ImportAsset(savePath);
 
@@ -115,35 +122,33 @@ namespace UnitySkills
         public static object UitkFindFiles(string type = "all", string folder = null, string filter = null, int limit = 200)
         {
             var searchFolder = string.IsNullOrEmpty(folder) ? "Assets" : folder;
-            string[] guids;
+            var typeLower = type.ToLowerInvariant();
+            var ussGuids = (typeLower == "uxml") ? new string[0] : AssetDatabase.FindAssets("t:StyleSheet", new[] { searchFolder });
+            var uxmlGuids = (typeLower == "uss") ? new string[0] : AssetDatabase.FindAssets("t:VisualTreeAsset", new[] { searchFolder });
 
-            switch (type.ToLowerInvariant())
+            var seen = new System.Collections.Generic.HashSet<string>();
+            var filteredPaths = new System.Collections.Generic.List<string>();
+
+            foreach (var g in ussGuids.Concat(uxmlGuids))
             {
-                case "uss":
-                    guids = AssetDatabase.FindAssets("t:StyleSheet", new[] { searchFolder });
-                    break;
-                case "uxml":
-                    guids = AssetDatabase.FindAssets("t:VisualTreeAsset", new[] { searchFolder });
-                    break;
-                default: // "all"
-                    var ussGuids = AssetDatabase.FindAssets("t:StyleSheet", new[] { searchFolder });
-                    var uxmlGuids = AssetDatabase.FindAssets("t:VisualTreeAsset", new[] { searchFolder });
-                    guids = ussGuids.Concat(uxmlGuids).ToArray();
-                    break;
+                if (filteredPaths.Count >= limit) break;
+                var p = AssetDatabase.GUIDToAssetPath(g);
+                if (!seen.Add(p)) continue;
+                var ext = Path.GetExtension(p).TrimStart('.').ToLowerInvariant();
+                if (typeLower == "uss" && ext != "uss") continue;
+                if (typeLower == "uxml" && ext != "uxml") continue;
+                if (ext != "uss" && ext != "uxml") continue;
+                if (!string.IsNullOrEmpty(filter) && !p.Contains(filter)) continue;
+                filteredPaths.Add(p);
             }
 
-            var files = guids
-                .Select(g => AssetDatabase.GUIDToAssetPath(g))
-                .Where(p => string.IsNullOrEmpty(filter) || p.Contains(filter))
-                .Take(limit)
-                .Select(p => new
-                {
-                    path = p,
-                    type = Path.GetExtension(p).TrimStart('.').ToLowerInvariant(),
-                    name = Path.GetFileNameWithoutExtension(p)
-                })
-                .OrderBy(f => f.path)
-                .ToArray();
+            filteredPaths.Sort();
+            var files = filteredPaths.Select(p => new
+            {
+                path = p,
+                type = Path.GetExtension(p).TrimStart('.').ToLowerInvariant(),
+                name = Path.GetFileNameWithoutExtension(p)
+            }).ToArray();
 
             return new { count = files.Length, files };
         }
@@ -379,7 +384,7 @@ namespace UnitySkills
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            GetTemplateContent(template.ToLower(), uiName, ussFilePath, out var ussContent, out var uxmlContent);
+            GetTemplateContent(template.ToLower(), uiName, $"{uiName}.uss", out var ussContent, out var uxmlContent);
 
             File.WriteAllText(ussFilePath, ussContent, System.Text.Encoding.UTF8);
             File.WriteAllText(uxmlFilePath, uxmlContent, System.Text.Encoding.UTF8);

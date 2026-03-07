@@ -274,6 +274,19 @@ namespace UnitySkills
                 }
                 EditorGUILayout.EndHorizontal();
 
+                // KeepAlive Interval
+                EditorGUILayout.BeginHorizontal();
+                var keepAliveLabel = Localization.Current == Localization.Language.Chinese ? "保活间隔" : "KeepAlive";
+                EditorGUILayout.LabelField(keepAliveLabel + ":", GUILayout.Width(60));
+                var newKeepAlive = EditorGUILayout.IntField(SkillsHttpServer.KeepAliveIntervalSeconds, GUILayout.Width(40));
+                EditorGUILayout.LabelField(L("keepalive_unit"), GUILayout.Width(30));
+                if (newKeepAlive != SkillsHttpServer.KeepAliveIntervalSeconds)
+                {
+                    SkillsHttpServer.KeepAliveIntervalSeconds = newKeepAlive;
+                }
+                EditorGUILayout.EndHorizontal();
+                DrawColoredLabel(L("keepalive_hint"), MutedColor, false);
+
                 // Log Level
                 EditorGUILayout.BeginHorizontal();
                 var logLabel = Localization.Current == Localization.Language.Chinese ? "日志级别" : "Log Level";

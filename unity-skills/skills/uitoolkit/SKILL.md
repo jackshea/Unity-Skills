@@ -1,11 +1,11 @@
 ---
 name: unity-uitoolkit
-description: "UI Toolkit (UITK) for Unity — create/edit USS stylesheets and UXML layouts, configure UIDocument in scenes. Use when users want to create UI with UI Toolkit, UXML, USS, UIDocument, PanelSettings, or modern Unity UI. Triggers: UI Toolkit, UXML, USS, UIDocument, PanelSettings, VisualElement, 界面工具包."
+description: "UI Toolkit (UITK) for Unity — create/edit USS stylesheets and UXML layouts, configure UIDocument in scenes. Includes USS design patterns for building polished UI (cards, nav bars, badges, transitions). Use when users want to create UI with UI Toolkit, UXML, USS, UIDocument, PanelSettings, VisualElement, 界面工具包."
 ---
 
 # Unity UI Toolkit Skills
 
-Work with Unity's web-style UI system: **UXML** (≈HTML structure) + **USS** (≈CSS styling) + **UIDocument** (scene display).
+Work with Unity's web-style UI system: **UXML** (structure, like HTML) + **USS** (styling, like CSS) + **UIDocument** (scene display).
 
 > **Requires Unity 2021.3+**. This module is separate from `ui_*` skills (uGUI/Canvas). Use `uitk_*` for UI Toolkit only.
 
@@ -26,6 +26,529 @@ Work with Unity's web-style UI system: **UXML** (≈HTML structure) + **USS** (�
 | `uitk_inspect_uxml` | Inspect | Parse UXML element hierarchy |
 | `uitk_create_from_template` | Template | Create UXML+USS from template |
 | `uitk_create_batch` | Batch | Batch create USS/UXML files |
+
+---
+
+## USS Design Guide
+
+USS (Unity Style Sheets) is the styling language for UI Toolkit. It is intentionally modeled after CSS but only implements a **subset**. This guide teaches you what USS can and cannot do, so you can generate polished UI without trial-and-error.
+
+### USS vs CSS
+
+| Feature | CSS | USS |
+|---------|-----|-----|
+| Flexbox (`flex-direction`, `flex-wrap`, `align-items`, `justify-content`) | Yes | **Yes** |
+| `border-radius` | Yes | **Yes** |
+| `opacity` | Yes | **Yes** |
+| `overflow: hidden` | Yes | **Yes** |
+| `transition` (property, duration, timing, delay) | Yes | **Yes** |
+| `translate`, `scale`, `rotate` | Yes | **Yes** |
+| CSS custom properties (`--var` / `var()`) | Yes | **Yes** |
+| Pseudo-classes (`:hover`, `:active`, `:focus`, `:checked`, `:disabled`) | Yes | **Yes** |
+| `text-shadow` (offset-x offset-y blur color) | Yes | **Yes** (same syntax) |
+| `position: absolute / relative` | Yes | **Yes** |
+| `width`, `height` (px / %) | Yes | **Yes** |
+| `display: grid` | Yes | **No** — use `flex-wrap: wrap` |
+| `display: inline / block` | Yes | **No** — everything is flex |
+| `box-shadow` | Yes | **No** — fake with nested elements |
+| `linear-gradient()` / `radial-gradient()` | Yes | **No** — use texture PNG |
+| `calc()` | Yes | **No** |
+| `@media` queries | Yes | **No** |
+| `::before` / `::after` pseudo-elements | Yes | **No** — add child VisualElement |
+| `z-index` | Yes | **No** — use document order |
+| **Unity-specific** `-unity-font-style` | — | `normal / bold / italic / bold-and-italic` |
+| **Unity-specific** `-unity-text-align` | — | `upper-left / upper-center / middle-center ...` |
+| **Unity-specific** `-unity-background-scale-mode` | — | `stretch-to-fill / scale-and-crop / scale-to-fit` |
+| **Unity-specific** `-unity-slice-*` | — | 9-slice border for background images |
+| **Unity-specific** `-unity-text-outline-width / -color` | — | Text outline / stroke effect |
+
+> **Key mental model**: Every VisualElement is a flex container. There is no `display: block/inline/grid`. Use `flex-direction: row` + `flex-wrap: wrap` for grid-like layouts.
+
+---
+
+### Design Tokens
+
+Use `:root` CSS variables to build a consistent design system. All components reference tokens instead of hard-coded values.
+
+```css
+:root {
+    /* Palette */
+    --color-primary: #E8632B;
+    --color-primary-dark: #C9521D;
+    --color-secondary: #2B7DE8;
+    --color-bg: #FFF8F0;
+    --color-surface: #FFFFFF;
+    --color-text: #1A1A1A;
+    --color-muted: #666666;
+    --color-border: #E0E0E0;
+    --color-success: #34C759;
+    --color-danger: #FF3B30;
+
+    /* Spacing — 8px grid */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
+    --space-2xl: 48px;
+
+    /* Border radius */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 16px;
+    --radius-full: 9999px;
+
+    /* Font sizes */
+    --font-xs: 11px;
+    --font-sm: 12px;
+    --font-md: 14px;
+    --font-lg: 18px;
+    --font-xl: 24px;
+    --font-2xl: 36px;
+    --font-3xl: 48px;
+}
+```
+
+> **Tip**: Create the tokens USS first, then `<Style src="tokens.uss"/>` at the top of every UXML so all components share the same design system.
+
+---
+
+### USS Properties Quick Reference
+
+#### Flex Layout
+```css
+.container {
+    display: flex;                       /* always flex in USS */
+    flex-direction: row;                 /* row | column (default: column) */
+    flex-wrap: wrap;                     /* nowrap | wrap */
+    flex-grow: 1;
+    flex-shrink: 0;
+    flex-basis: auto;
+    align-items: center;                 /* flex-start | flex-end | center | stretch */
+    justify-content: space-between;      /* flex-start | flex-end | center | space-between | space-around */
+}
+```
+
+#### Box Model
+```css
+.element {
+    width: 200px;    height: 100px;
+    min-width: 50px; max-width: 500px;
+    margin: 8px;                         /* or margin-top/right/bottom/left */
+    padding: 16px;                       /* or padding-top/right/bottom/left */
+    border-width: 1px;                   /* or border-top-width etc. */
+    border-color: #333;
+    border-radius: 4px;                  /* or border-top-left-radius etc. */
+}
+```
+
+#### Text
+```css
+.text {
+    font-size: 16px;
+    color: #E0E0E0;
+    -unity-font-style: bold;             /* normal | bold | italic | bold-and-italic */
+    -unity-text-align: middle-center;    /* upper-left | upper-center | middle-left | middle-center ... */
+    white-space: normal;                 /* nowrap | normal */
+    text-overflow: ellipsis;             /* clip | ellipsis */
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    -unity-text-outline-width: 1px;
+    -unity-text-outline-color: #000;
+}
+```
+
+#### Background & Appearance
+```css
+.element {
+    background-color: rgba(0,0,0,0.5);
+    background-image: url("Assets/UI/icon.png");
+    -unity-background-scale-mode: scale-to-fit;  /* stretch-to-fill | scale-and-crop | scale-to-fit */
+    border-color: #4A90D9;
+    border-radius: 8px;
+    opacity: 0.8;
+    overflow: hidden;                    /* clips children to bounds */
+}
+```
+
+#### Positioning
+```css
+.overlay {
+    position: absolute;                  /* absolute | relative (default) */
+    top: 10px; left: 20px; right: 10px; bottom: 0;
+    translate: 50% 0;
+}
+```
+
+#### Transforms
+```css
+.element {
+    translate: 10px 20px;
+    scale: 1.1 1.1;
+    rotate: 15deg;
+    transform-origin: center;            /* left | center | right + top | center | bottom */
+}
+```
+
+#### Pseudo-classes
+```css
+.btn:hover    { background-color: #555; }
+.btn:active   { background-color: #333; }
+.btn:focus    { border-color: #4A90D9; }
+.btn:checked  { background-color: #4A90D9; }
+.btn:disabled { opacity: 0.4; }
+```
+
+---
+
+### Layout Patterns
+
+#### Card Grid (3-column, wrapping)
+```css
+.card-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: var(--space-lg);
+}
+.card {
+    width: 30%;
+    margin: 1.5%;
+    padding: var(--space-lg);
+    background-color: var(--color-surface);
+    border-radius: var(--radius-lg);
+    border-width: 1px;
+    border-color: var(--color-border);
+}
+```
+```xml
+<engine:VisualElement class="card-grid">
+    <engine:VisualElement class="card"> ... </engine:VisualElement>
+    <engine:VisualElement class="card"> ... </engine:VisualElement>
+    <engine:VisualElement class="card"> ... </engine:VisualElement>
+</engine:VisualElement>
+```
+
+#### Navigation Bar
+```css
+.navbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    height: 56px;
+    padding: 0 var(--space-lg);
+    background-color: var(--color-surface);
+    border-bottom-width: 1px;
+    border-color: var(--color-border);
+}
+.nav-brand {
+    font-size: var(--font-lg);
+    -unity-font-style: bold;
+    color: var(--color-text);
+}
+.nav-links {
+    flex-direction: row;
+}
+.nav-link {
+    margin-left: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    color: var(--color-muted);
+    font-size: var(--font-md);
+}
+.nav-link:hover { color: var(--color-primary); }
+```
+```xml
+<engine:VisualElement class="navbar">
+    <engine:Label class="nav-brand" text="MyApp" />
+    <engine:VisualElement class="nav-links">
+        <engine:Label class="nav-link" text="Home" />
+        <engine:Label class="nav-link" text="Features" />
+        <engine:Label class="nav-link" text="Pricing" />
+    </engine:VisualElement>
+    <engine:Button class="btn btn-primary" text="Sign Up" />
+</engine:VisualElement>
+```
+
+#### Hero Section (centered title + subtitle)
+```css
+.hero {
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2xl) var(--space-lg);
+    background-color: var(--color-bg);
+}
+.hero-title {
+    font-size: var(--font-3xl);
+    -unity-font-style: bold;
+    color: var(--color-text);
+    -unity-text-align: upper-center;
+    margin-bottom: var(--space-md);
+}
+.hero-subtitle {
+    font-size: var(--font-lg);
+    color: var(--color-muted);
+    -unity-text-align: upper-center;
+    max-width: 600px;
+}
+```
+
+#### Sidebar + Content (two-pane)
+```css
+.layout-split {
+    flex-direction: row;
+    flex-grow: 1;
+}
+.sidebar {
+    width: 240px;
+    padding: var(--space-lg);
+    background-color: var(--color-surface);
+    border-right-width: 1px;
+    border-color: var(--color-border);
+}
+.content {
+    flex-grow: 1;
+    padding: var(--space-lg);
+}
+```
+
+---
+
+### Component Patterns
+
+#### Icon Circle
+```css
+.icon-circle {
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.icon-circle--primary { background-color: rgba(232,99,43,0.15); }
+.icon-circle--success { background-color: rgba(52,199,89,0.15); }
+.icon-circle--blue    { background-color: rgba(43,125,232,0.15); }
+.icon-circle Label {
+    font-size: var(--font-xl);
+    -unity-text-align: middle-center;
+}
+```
+```xml
+<engine:VisualElement class="icon-circle icon-circle--primary">
+    <engine:Label text="&#x2b50;" />
+</engine:VisualElement>
+```
+
+#### Tag / Badge / Pill
+```css
+.tag {
+    padding: 4px 12px;
+    border-radius: var(--radius-full);
+    font-size: var(--font-xs);
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+.tag--outline {
+    border-width: 1px;
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+    background-color: rgba(0,0,0,0);
+}
+.tag--filled {
+    background-color: var(--color-primary);
+    color: #FFFFFF;
+}
+```
+```xml
+<engine:Label class="tag tag--outline" text="Design" />
+<engine:Label class="tag tag--filled" text="NEW" />
+```
+
+#### Button Variants
+```css
+.btn {
+    padding: var(--space-sm) var(--space-lg);
+    border-radius: var(--radius-md);
+    font-size: var(--font-md);
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    border-width: 0;
+    transition-property: background-color, scale;
+    transition-duration: 0.15s;
+    transition-timing-function: ease-out;
+}
+.btn:hover  { scale: 1.02 1.02; }
+.btn:active { scale: 0.98 0.98; }
+
+.btn-primary {
+    background-color: var(--color-primary);
+    color: #FFFFFF;
+}
+.btn-primary:hover { background-color: var(--color-primary-dark); }
+
+.btn-outline {
+    background-color: rgba(0,0,0,0);
+    border-width: 1px;
+    border-color: var(--color-border);
+    color: var(--color-text);
+}
+.btn-outline:hover { border-color: var(--color-primary); color: var(--color-primary); }
+
+.btn-ghost {
+    background-color: rgba(0,0,0,0);
+    color: var(--color-primary);
+}
+.btn-ghost:hover { background-color: rgba(232,99,43,0.1); }
+```
+
+#### Feature Card (full example)
+
+USS:
+```css
+.feature-card {
+    padding: var(--space-lg);
+    background-color: var(--color-surface);
+    border-radius: var(--radius-lg);
+    border-width: 1px;
+    border-color: var(--color-border);
+    transition-property: translate, border-color;
+    transition-duration: 0.2s;
+}
+.feature-card:hover {
+    translate: 0 -2px;
+    border-color: var(--color-primary);
+}
+.feature-card__header {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: var(--space-md);
+}
+.feature-card__title {
+    font-size: var(--font-lg);
+    -unity-font-style: bold;
+    color: var(--color-text);
+    margin-left: var(--space-md);
+}
+.feature-card__desc {
+    font-size: var(--font-md);
+    color: var(--color-muted);
+    margin-bottom: var(--space-md);
+    white-space: normal;
+}
+.feature-card__tags {
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+.feature-card__tags .tag { margin-right: var(--space-sm); margin-bottom: var(--space-xs); }
+```
+
+UXML:
+```xml
+<engine:VisualElement class="feature-card">
+    <engine:VisualElement class="feature-card__header">
+        <engine:VisualElement class="icon-circle icon-circle--primary">
+            <engine:Label text="&#x1f680;" />
+        </engine:VisualElement>
+        <engine:Label class="feature-card__title" text="Fast Iteration" />
+    </engine:VisualElement>
+    <engine:Label class="feature-card__desc" text="Hot-reload USS changes instantly without recompiling. Edit styles and see results in real time." />
+    <engine:VisualElement class="feature-card__tags">
+        <engine:Label class="tag tag--outline" text="Performance" />
+        <engine:Label class="tag tag--outline" text="DX" />
+    </engine:VisualElement>
+</engine:VisualElement>
+```
+
+---
+
+### Transitions & Visual Effects
+
+#### Smooth Transitions
+```css
+.interactive {
+    transition-property: background-color, scale, translate, opacity, border-color;
+    transition-duration: 0.2s;
+    transition-timing-function: ease-out;
+    /* transition-delay: 0s; */
+}
+```
+> **Supported timing functions**: `ease`, `ease-in`, `ease-out`, `ease-in-out`, `linear`, `ease-in-sine`, `ease-out-sine`, `ease-in-bounce`, `ease-out-bounce`, `ease-in-elastic`, `ease-out-elastic`, `ease-in-back`, `ease-out-back`
+
+#### Hover Lift
+```css
+.card       { translate: 0 0; transition-property: translate; transition-duration: 0.2s; }
+.card:hover { translate: 0 -4px; }
+```
+
+#### Scale Pulse on Click
+```css
+.btn         { scale: 1 1; transition-property: scale; transition-duration: 0.1s; }
+.btn:active  { scale: 0.95 0.95; }
+```
+
+#### Text Shadow & Outline
+```css
+.title-glow {
+    text-shadow: 0 0 8px rgba(232,99,43,0.6);
+    color: #FFFFFF;
+}
+.outlined-text {
+    -unity-text-outline-width: 1px;
+    -unity-text-outline-color: rgba(0,0,0,0.5);
+    color: #FFFFFF;
+}
+```
+
+#### Fade In (opacity transition)
+```css
+.fade-target {
+    opacity: 0;
+    transition-property: opacity;
+    transition-duration: 0.3s;
+}
+.fade-target.visible {
+    opacity: 1;
+}
+```
+> **Note**: Adding/removing USS classes at runtime via C# triggers the transition automatically.
+
+---
+
+### Workarounds — USS Limitations
+
+| Need | CSS approach | USS workaround |
+|------|-------------|----------------|
+| Box shadow | `box-shadow: 0 2px 8px rgba(0,0,0,0.15)` | Nest a slightly larger VisualElement behind with semi-transparent `background-color` and `border-radius` |
+| Gradient background | `linear-gradient(...)` | Use `background-image` pointing to a gradient texture PNG (`Assets/UI/gradient.png`) |
+| Circular avatar | `border-radius: 50%` | Set equal `width`/`height` + `border-radius` = half of width (e.g., `width: 48px; border-radius: 24px;`) + `overflow: hidden` |
+| Grid layout | `display: grid; grid-template-columns: repeat(3, 1fr)` | `flex-direction: row; flex-wrap: wrap;` with percentage `width` on children (e.g., `width: 33%`) |
+| Text truncation | `text-overflow: ellipsis` + `overflow: hidden` | Same — USS supports `text-overflow: ellipsis` with `overflow: hidden` on the label |
+| Responsive layout | `@media (max-width: ...)` | Not available — use `PanelSettings.scaleMode = ScaleWithScreenSize` for consistent scaling |
+| Pseudo-elements | `::before` / `::after` | Add an extra `<engine:VisualElement>` child and style it with `position: absolute` |
+| Stacking order | `z-index` | Earlier siblings render behind later siblings — reorder elements in UXML |
+
+#### Fake Box Shadow Pattern
+```xml
+<!-- UXML: shadow wrapper -->
+<engine:VisualElement class="shadow-wrapper">
+    <engine:VisualElement class="shadow-layer" />
+    <engine:VisualElement class="card-content">
+        <engine:Label text="Card with shadow" />
+    </engine:VisualElement>
+</engine:VisualElement>
+```
+```css
+.shadow-wrapper { padding: 4px; }
+.shadow-layer {
+    position: absolute;
+    top: 4px; left: 2px; right: 2px; bottom: 0;
+    background-color: rgba(0,0,0,0.08);
+    border-radius: 14px;
+}
+.card-content {
+    background-color: var(--color-surface);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+}
+```
 
 ---
 
@@ -199,7 +722,7 @@ Generate a paired UXML+USS from a built-in template. Files are named `{name}.uxm
 | `hud` | Absolute-positioned HUD: minimap, score label, health bar |
 | `dialog` | Modal dialog: title, message, OK/Cancel buttons |
 | `settings` | Settings panel: Volume sliders, Toggle, DropdownField |
-| `inventory` | 3×3 grid inventory with ScrollView |
+| `inventory` | 3x3 grid inventory with ScrollView |
 | `list` | Scrollable item list |
 
 **Returns**: `{success, template, ussPath, uxmlPath, name}`
@@ -218,100 +741,14 @@ Batch create multiple USS and UXML files in one call.
 **Item schema**:
 ```json
 {
-  "type": "uss",        // "uss" or "uxml"
+  "type": "uss",
   "savePath": "Assets/UI/Menu.uss",
-  "content": "...",     // optional: file content
-  "ussPath": "..."      // optional: for uxml, USS to reference
+  "content": "...",
+  "ussPath": "..."
 }
 ```
 
 **Returns**: `{success, totalItems, successCount, failCount, results[]}`
-
----
-
-## USS Properties Quick Reference
-
-### Flex Layout
-```css
-.element {
-    display: flex;
-    flex-direction: row;          /* row | column */
-    flex-wrap: wrap;              /* nowrap | wrap */
-    flex-grow: 1;
-    flex-shrink: 0;
-    flex-basis: auto;
-    align-items: center;          /* flex-start | flex-end | center | stretch */
-    justify-content: space-between; /* flex-start | flex-end | center | space-between | space-around */
-}
-```
-
-### Box Model
-```css
-.element {
-    width: 200px;
-    height: 100px;
-    min-width: 50px;
-    max-width: 500px;
-    margin: 8px;                  /* or margin-top/right/bottom/left */
-    padding: 16px;
-    border-width: 1px;
-    border-color: #333;
-    border-radius: 4px;
-}
-```
-
-### Text
-```css
-.element {
-    font-size: 16px;
-    color: #E0E0E0;
-    -unity-font-style: bold;      /* normal | bold | italic | bold-and-italic */
-    -unity-text-align: upper-left; /* upper-left | upper-center | middle-left | middle-center ... */
-    white-space: normal;           /* nowrap | normal */
-}
-```
-
-### Background & Border
-```css
-.element {
-    background-color: #2D2D2D;
-    background-color: rgba(0,0,0,0.5);
-    border-color: #4A90D9;
-    border-width: 1px;
-    border-radius: 8px;
-    -unity-background-scale-mode: stretch-to-fill;
-}
-```
-
-### Positioning
-```css
-.element {
-    position: absolute;           /* absolute | relative */
-    top: 10px;
-    left: 20px;
-    right: 10px;
-    bottom: 0;
-    translate: 50% 0;
-}
-```
-
-### Pseudo-classes
-```css
-.btn:hover   { background-color: #555; }
-.btn:active  { background-color: #333; }
-.btn:focus   { border-color: #4A90D9; }
-.btn:checked { background-color: #4A90D9; }
-.btn:disabled { opacity: 0.4; }
-```
-
-### CSS Variables (Custom Properties)
-```css
-:root {
-    --primary: #4A90D9;
-    --bg: #1E1E1E;
-}
-.element { color: var(--primary); background-color: var(--bg); }
-```
 
 ---
 
@@ -370,22 +807,25 @@ Batch create multiple USS and UXML files in one call.
 <engine:ColorField label="Color" value="#FF0000FF" />
 ```
 
-### Style Reference
+### Style Reference in UXML
 ```xml
-<!-- Inline style reference (preferred for project paths) -->
-<Style src="Assets/UI/MyStyle.uss" />
-<!-- Package relative -->
-<Style src="project://database/Assets/UI/MyStyle.uss" />
+<!-- USS in same directory as UXML — use just the filename -->
+<Style src="MyStyle.uss" />
+
+<!-- USS in a different directory — use full project-relative path -->
+<Style src="Assets/UI/Shared/tokens.uss" />
 ```
 
 ---
 
 ## End-to-End Example
 
+Build a feature-card page with navigation bar, hero section, and 3-column card grid.
+
 ```python
 import unity_skills
 
-# Step 1: Create PanelSettings
+# 1. Create PanelSettings (required for runtime rendering)
 unity_skills.call_skill("uitk_create_panel_settings",
     savePath="Assets/UI/GamePanel.asset",
     scaleMode="ScaleWithScreenSize",
@@ -393,76 +833,144 @@ unity_skills.call_skill("uitk_create_panel_settings",
     referenceResolutionY=1080
 )
 
-# Step 2: Create USS stylesheet
+# 2. Create USS with design tokens + component styles
 unity_skills.call_skill("uitk_create_uss",
-    savePath="Assets/UI/Game.uss",
-    content="""
-:root { --accent: #4A90D9; }
-.container { width: 100%; height: 100%; align-items: center; justify-content: center; }
-.title { font-size: 36px; color: white; -unity-font-style: bold; }
+    savePath="Assets/UI/Features.uss",
+    content=""":root {
+    --color-primary: #E8632B;
+    --color-primary-dark: #C9521D;
+    --color-bg: #FFF8F0;
+    --color-surface: #FFFFFF;
+    --color-text: #1A1A1A;
+    --color-muted: #666666;
+    --color-border: #E0E0E0;
+    --space-sm: 8px; --space-md: 16px; --space-lg: 24px; --space-xl: 32px;
+    --radius-md: 8px; --radius-lg: 16px; --radius-full: 9999px;
+    --font-sm: 12px; --font-md: 14px; --font-lg: 18px; --font-xl: 24px; --font-2xl: 36px;
+}
+.page { width: 100%; height: 100%; background-color: var(--color-bg); }
+.navbar {
+    flex-direction: row; align-items: center; justify-content: space-between;
+    height: 56px; padding: 0 var(--space-lg);
+    background-color: var(--color-surface); border-bottom-width: 1px; border-color: var(--color-border);
+}
+.nav-brand { font-size: var(--font-lg); -unity-font-style: bold; color: var(--color-text); }
+.nav-links { flex-direction: row; }
+.nav-link { margin-left: var(--space-md); color: var(--color-muted); font-size: var(--font-md); }
+.nav-link:hover { color: var(--color-primary); }
+.hero { align-items: center; justify-content: center; padding: var(--space-xl); }
+.hero-title { font-size: var(--font-2xl); -unity-font-style: bold; color: var(--color-text); margin-bottom: var(--space-sm); }
+.hero-sub { font-size: var(--font-lg); color: var(--color-muted); }
+.card-grid { flex-direction: row; flex-wrap: wrap; padding: 0 var(--space-lg); }
+.card {
+    width: 30%; margin: 1.5%; padding: var(--space-lg);
+    background-color: var(--color-surface); border-radius: var(--radius-lg);
+    border-width: 1px; border-color: var(--color-border);
+    transition-property: translate, border-color; transition-duration: 0.2s;
+}
+.card:hover { translate: 0 -2px; border-color: var(--color-primary); }
+.card__icon { width: 48px; height: 48px; border-radius: 24px; align-items: center; justify-content: center; margin-bottom: var(--space-md); }
+.card__icon--orange { background-color: rgba(232,99,43,0.15); }
+.card__icon--blue { background-color: rgba(43,125,232,0.15); }
+.card__icon--green { background-color: rgba(52,199,89,0.15); }
+.card__icon Label { font-size: var(--font-xl); -unity-text-align: middle-center; }
+.card__title { font-size: var(--font-lg); -unity-font-style: bold; color: var(--color-text); margin-bottom: var(--space-sm); }
+.card__desc { font-size: var(--font-md); color: var(--color-muted); white-space: normal; margin-bottom: var(--space-md); }
+.card__tags { flex-direction: row; flex-wrap: wrap; }
+.tag { padding: 4px 12px; border-radius: var(--radius-full); font-size: 11px; -unity-font-style: bold; border-width: 1px; border-color: var(--color-primary); color: var(--color-primary); margin-right: var(--space-sm); }
+.btn { padding: var(--space-sm) var(--space-lg); border-radius: var(--radius-md); -unity-font-style: bold; border-width: 0; transition-property: background-color, scale; transition-duration: 0.15s; }
+.btn:hover { scale: 1.02 1.02; }
+.btn-primary { background-color: var(--color-primary); color: #FFFFFF; }
+.btn-primary:hover { background-color: var(--color-primary-dark); }
 """
 )
 
-# Step 3: Create UXML layout (references the USS)
+# 3. Create UXML layout referencing the USS
 unity_skills.call_skill("uitk_create_uxml",
-    savePath="Assets/UI/Game.uxml",
-    ussPath="Assets/UI/Game.uss",
+    savePath="Assets/UI/Features.uxml",
     content="""<?xml version="1.0" encoding="utf-8"?>
 <engine:UXML xmlns:engine="UnityEngine.UIElements">
-    <Style src="Assets/UI/Game.uss" />
-    <engine:VisualElement class="container">
-        <engine:Label class="title" text="Game UI" name="title" />
-        <engine:Button text="Start" name="btn-start" />
+    <Style src="Features.uss" />
+    <engine:VisualElement class="page">
+        <!-- Nav Bar -->
+        <engine:VisualElement class="navbar">
+            <engine:Label class="nav-brand" text="SkillForge" />
+            <engine:VisualElement class="nav-links">
+                <engine:Label class="nav-link" text="Home" />
+                <engine:Label class="nav-link" text="Features" />
+                <engine:Label class="nav-link" text="Docs" />
+            </engine:VisualElement>
+            <engine:Button class="btn btn-primary" text="Get Started" />
+        </engine:VisualElement>
+        <!-- Hero -->
+        <engine:VisualElement class="hero">
+            <engine:Label class="hero-title" text="Build Amazing UI" />
+            <engine:Label class="hero-sub" text="Powerful components for your Unity project" />
+        </engine:VisualElement>
+        <!-- Card Grid -->
+        <engine:VisualElement class="card-grid">
+            <engine:VisualElement class="card">
+                <engine:VisualElement class="card__icon card__icon--orange">
+                    <engine:Label text="&#x1f680;" />
+                </engine:VisualElement>
+                <engine:Label class="card__title" text="Fast Iteration" />
+                <engine:Label class="card__desc" text="Hot-reload USS changes instantly without recompiling." />
+                <engine:VisualElement class="card__tags">
+                    <engine:Label class="tag" text="Performance" />
+                    <engine:Label class="tag" text="DX" />
+                </engine:VisualElement>
+            </engine:VisualElement>
+            <engine:VisualElement class="card">
+                <engine:VisualElement class="card__icon card__icon--blue">
+                    <engine:Label text="&#x1f3a8;" />
+                </engine:VisualElement>
+                <engine:Label class="card__title" text="Design Tokens" />
+                <engine:Label class="card__desc" text="CSS variables for colors, spacing, and typography." />
+                <engine:VisualElement class="card__tags">
+                    <engine:Label class="tag" text="Theming" />
+                </engine:VisualElement>
+            </engine:VisualElement>
+            <engine:VisualElement class="card">
+                <engine:VisualElement class="card__icon card__icon--green">
+                    <engine:Label text="&#x2699;" />
+                </engine:VisualElement>
+                <engine:Label class="card__title" text="Flex Layout" />
+                <engine:Label class="card__desc" text="Familiar flexbox model for responsive card grids." />
+                <engine:VisualElement class="card__tags">
+                    <engine:Label class="tag" text="Layout" />
+                    <engine:Label class="tag" text="Flex" />
+                </engine:VisualElement>
+            </engine:VisualElement>
+        </engine:VisualElement>
     </engine:VisualElement>
 </engine:UXML>
 """
 )
 
-# Step 4: Create UIDocument in scene
+# 4. Create UIDocument in scene
 unity_skills.call_skill("uitk_create_document",
-    name="GameUI",
-    uxmlPath="Assets/UI/Game.uxml",
+    name="FeaturesUI",
+    uxmlPath="Assets/UI/Features.uxml",
     panelSettingsPath="Assets/UI/GamePanel.asset"
 )
 
-# Step 5: Use template shortcut instead
-unity_skills.call_skill("uitk_create_from_template",
-    template="menu",
-    savePath="Assets/UI",
-    name="MainMenu"
-)
-# → Creates Assets/UI/MainMenu.uss + Assets/UI/MainMenu.uxml
-
-# Step 6: Batch create files
-unity_skills.call_skill("uitk_create_batch", items='''[
-    {"type": "uss", "savePath": "Assets/UI/HUD.uss"},
-    {"type": "uxml", "savePath": "Assets/UI/HUD.uxml", "ussPath": "Assets/UI/HUD.uss"}
-]''')
-
-# Step 7: Read and edit file
-result = unity_skills.call_skill("uitk_read_file", filePath="Assets/UI/Game.uss")
-new_content = result["result"]["content"].replace("#4A90D9", "#E94560")
+# 5. Read → Modify → Write workflow (change accent color)
+result = unity_skills.call_skill("uitk_read_file", filePath="Assets/UI/Features.uss")
+updated = result["result"]["content"].replace("#E8632B", "#6C5CE7")
 unity_skills.call_skill("uitk_write_file",
-    filePath="Assets/UI/Game.uss",
-    content=new_content
+    filePath="Assets/UI/Features.uss",
+    content=updated
 )
-
-# Step 8: Inspect UXML structure
-unity_skills.call_skill("uitk_inspect_uxml",
-    filePath="Assets/UI/Game.uxml",
-    depth=3
-)
-
-# Step 9: List all UIDocuments in scene
-unity_skills.call_skill("uitk_list_documents")
 ```
 
 ---
 
 ## Workflow Notes
 
-1. **File → Scene**: Create USS+UXML first, then assign to UIDocument in scene
+1. **File → Scene**: Create USS + UXML first, then assign to UIDocument in scene
 2. **PanelSettings required**: Without PanelSettings, UIDocument won't render at runtime
-3. **Style src paths**: Use project-relative paths starting with `Assets/` in `<Style src="..."/>`
-4. **Read-Modify-Write**: Use `uitk_read_file` → edit content → `uitk_write_file` for incremental changes
-5. **Batch for efficiency**: Use `uitk_create_batch` when creating 2+ files to avoid repeated API calls
+3. **Style src paths**: When USS and UXML are in the **same folder**, use just the filename: `<Style src="MyStyle.uss" />`. Use a full path like `Assets/UI/tokens.uss` only when referencing a file in a different directory
+4. **Design tokens first**: Create a `tokens.uss` with `:root` variables, reference it in every UXML
+5. **Read-Modify-Write**: Use `uitk_read_file` → edit content → `uitk_write_file` for incremental changes
+6. **Batch for efficiency**: Use `uitk_create_batch` when creating 2+ files to reduce API calls
+7. **Test in Game view**: USS changes are visible in Game view immediately — no domain reload needed

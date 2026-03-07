@@ -93,6 +93,8 @@ namespace UnitySkills
             {"auto_restart", "Auto-restart after compile"},
             {"auto_restart_hint", "Server will automatically restart after Unity recompiles scripts"},
             {"timeout_unit", "min"},
+            {"keepalive_unit", "sec"},
+            {"keepalive_hint", "How often to wake Unity main thread when idle (min 5s)"},
 
             // Skill descriptions
             {"scene_create", "Create a new empty scene"},
@@ -655,6 +657,8 @@ namespace UnitySkills
             {"auto_restart", "编译后自动重启"},
             {"auto_restart_hint", "Unity 重新编译脚本后服务器将自动重启"},
             {"timeout_unit", "分钟"},
+            {"keepalive_unit", "秒"},
+            {"keepalive_hint", "空闲时唤醒 Unity 主线程的间隔（最小 5 秒）"},
 
             // Skill descriptions
             {"scene_create", "创建新的空场景"},

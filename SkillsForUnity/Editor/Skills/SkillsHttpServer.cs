@@ -45,8 +45,22 @@ namespace UnitySkills
         private static long _lastRateLimitResetTicks = 0;
         private const int MaxRequestsPerSecond = 100;
         
-        // Keep-alive interval (ms)
-        private const int KeepAliveIntervalMs = 50;
+        // Keep-alive polling interval (ms) — how often the keep-alive thread checks for pending jobs
+        private const int KeepAlivePollingMs = 50;
+
+        // Keep-alive forced wakeup — configurable interval for unconditional main-thread wakeup
+        private const string PrefKeyKeepAliveInterval = "UnitySkills_KeepAliveIntervalSeconds";
+
+        /// <summary>
+        /// How often (seconds) the keep-alive thread forces a main-thread wakeup,
+        /// even when there are no pending jobs. Keeps watchdog and heartbeat alive
+        /// while Unity is unfocused. Default 30s, minimum 5s.
+        /// </summary>
+        public static int KeepAliveIntervalSeconds
+        {
+            get => Mathf.Max(5, EditorPrefs.GetInt(PrefKeyKeepAliveInterval, 30));
+            set => EditorPrefs.SetInt(PrefKeyKeepAliveInterval, Mathf.Max(5, value));
+        }
         // Request processing timeout - cached for thread safety (EditorPrefs is main-thread only)
         private static int _cachedTimeoutMs = 60 * 60 * 1000;
         private static int RequestTimeoutMs => _cachedTimeoutMs;
@@ -56,6 +70,13 @@ namespace UnitySkills
         // Heartbeat interval for registry (seconds)
         private const double HeartbeatInterval = 10.0;
         private static double _lastHeartbeatTime = 0;
+
+        // Watchdog: periodically verify listener thread is alive and restart if not
+        private const double WatchdogInterval = 15.0;
+        private static double _lastWatchdogCheck = 0;
+
+        // KeepAlive: unconditional wakeup interval (ticks; 5s = 50_000_000 ticks)
+        private static long _lastForceWakeTicks = 0;
 
         // Statistics
         private static long _totalRequestsProcessed = 0;
@@ -513,7 +534,7 @@ namespace UnitySkills
             {
                 try
                 {
-                    Thread.Sleep(KeepAliveIntervalMs);
+                    Thread.Sleep(KeepAlivePollingMs);
                     
                     bool hasPendingJobs;
                     lock (_queueLock)
@@ -525,6 +546,17 @@ namespace UnitySkills
                     {
                         // Thread-safe call to wake up Unity's main thread
                         EditorApplication.QueuePlayerLoopUpdate();
+                    }
+                    else
+                    {
+                        // No pending jobs: still wake up periodically so watchdog and heartbeat can run
+                        long nowTicks = DateTime.UtcNow.Ticks;
+                        long intervalTicks = (long)KeepAliveIntervalSeconds * TimeSpan.TicksPerSecond;
+                        if (nowTicks - _lastForceWakeTicks > intervalTicks)
+                        {
+                            _lastForceWakeTicks = nowTicks;
+                            EditorApplication.QueuePlayerLoopUpdate();
+                        }
                     }
                 }
                 catch (ThreadAbortException) { break; }
@@ -631,12 +663,16 @@ namespace UnitySkills
                         signal?.Dispose(); // Only disposes if WaitAndRespond was never queued
                     }
                 }
-                catch (HttpListenerException) { /* Expected when stopping */ }
-                catch (ObjectDisposedException) { /* Expected when stopping */ }
+                catch (HttpListenerException)
+                {
+                    if (!_isRunning) break;
+                    Thread.Sleep(500); // avoid tight exception loop; watchdog will restart if needed
+                }
+                catch (ObjectDisposedException) { break; } // listener destroyed; watchdog will restart
                 catch (Exception)
                 {
-                    // Can't use Debug.Log here (not main thread safe for logging)
-                    // Errors will be visible if Unity console is monitoring
+                    if (!_isRunning) break;
+                    Thread.Sleep(1000); // back off on unknown error; watchdog will intervene
                 }
             }
         }
@@ -770,6 +806,22 @@ namespace UnitySkills
                 {
                     _lastHeartbeatTime = now;
                     RegistryService.Heartbeat(_port);
+                }
+
+                // Watchdog: restart server if listener thread has died
+                if (now - _lastWatchdogCheck > WatchdogInterval)
+                {
+                    _lastWatchdogCheck = now;
+                    bool listenerDead = _listenerThread == null || !_listenerThread.IsAlive;
+                    bool listenerNotListening = _listener == null || !_listener.IsListening;
+
+                    if (listenerDead || listenerNotListening)
+                    {
+                        SkillsLogger.LogWarning($"Watchdog: server unhealthy (threadAlive={!listenerDead}, listening={!listenerNotListening}), restarting...");
+                        int port = _port;
+                        Stop();
+                        Start(port, fallbackToAuto: true);
+                    }
                 }
             }
         }
