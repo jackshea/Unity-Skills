@@ -32,8 +32,7 @@ namespace UnitySkills
         private static Thread _keepAliveThread;
         private static volatile bool _isRunning;
         private static int _port = 8090;
-        private static readonly string _prefixBase = "http://localhost:";
-        private static string _prefix => $"{_prefixBase}{_port}/";
+        private const string DefaultServerIp = "0.0.0.0";
         
         // Job queue - HTTP thread enqueues, Main thread dequeues and processes
         private static readonly Queue<RequestJob> _jobQueue = new Queue<RequestJob>();
@@ -100,7 +99,7 @@ namespace UnitySkills
         private static bool _domainReloadPending = false;
 
         public static bool IsRunning => _isRunning;
-        public static string Url => _prefix;
+        public static string Url => $"http://{ServerIp}:{_port}/";
         public static int Port => _port;
         public static int QueuedRequests { get { lock (_queueLock) { return _jobQueue.Count; } } }
         public static long TotalProcessed => _totalRequestsProcessed;
@@ -122,6 +121,7 @@ namespace UnitySkills
         }
 
         private const string PrefKeyPreferredPort = "UnitySkills_PreferredPort";
+        private const string PrefKeyServerIp = "UnitySkills_ServerIp";
 
         /// <summary>
         /// Gets or sets the preferred port for the server.
@@ -131,6 +131,16 @@ namespace UnitySkills
         {
             get => EditorPrefs.GetInt(PrefKeyPreferredPort, 0);
             set => EditorPrefs.SetInt(PrefKeyPreferredPort, value);
+        }
+
+        /// <summary>
+        /// Gets or sets the configured bind IP for the server.
+        /// Default is 0.0.0.0, which binds on all interfaces.
+        /// </summary>
+        public static string ServerIp
+        {
+            get => NormalizeServerIp(EditorPrefs.GetString(PrefKeyServerIp, DefaultServerIp));
+            set => EditorPrefs.SetString(PrefKeyServerIp, NormalizeServerIp(value));
         }
 
         private const string PrefKeyRequestTimeout = "UnitySkills_RequestTimeoutMinutes";
@@ -147,6 +157,51 @@ namespace UnitySkills
                 EditorPrefs.SetInt(PrefKeyRequestTimeout, Mathf.Max(1, value));
                 RefreshTimeoutCache();
             }
+        }
+
+        private static string NormalizeServerIp(string ip)
+        {
+            if (string.IsNullOrWhiteSpace(ip))
+                return DefaultServerIp;
+
+            ip = ip.Trim();
+            if (string.Equals(ip, "localhost", StringComparison.OrdinalIgnoreCase))
+                return "127.0.0.1";
+
+            if (IPAddress.TryParse(ip, out var parsed))
+                return parsed.ToString();
+
+            return DefaultServerIp;
+        }
+
+        private static IEnumerable<string> GetListenerPrefixes(int port)
+        {
+            string serverIp = ServerIp;
+            if (serverIp == "0.0.0.0")
+            {
+                yield return $"http://+:{port}/";
+                yield return $"http://localhost:{port}/";
+                yield return $"http://127.0.0.1:{port}/";
+                yield break;
+            }
+
+            yield return $"http://{serverIp}:{port}/";
+
+            if (serverIp != "127.0.0.1")
+            {
+                yield return $"http://localhost:{port}/";
+                yield return $"http://127.0.0.1:{port}/";
+            }
+        }
+
+        private static HttpListener CreateAndStartListener(int port)
+        {
+            var listener = new HttpListener();
+            foreach (var prefix in GetListenerPrefixes(port))
+                listener.Prefixes.Add(prefix);
+
+            listener.Start();
+            return listener;
         }
 
         /// <summary>
@@ -372,7 +427,7 @@ namespace UnitySkills
         {
             if (_isRunning)
             {
-                SkillsLogger.LogVerbose($"Server already running at {_prefix}");
+                SkillsLogger.LogVerbose($"Server already running at {Url}");
                 return;
             }
 
@@ -391,11 +446,7 @@ namespace UnitySkills
                 {
                     try
                     {
-                        _listener = new HttpListener();
-                        _listener.Prefixes.Add($"{_prefixBase}{preferredPort}/");
-                        _listener.Prefixes.Add($"http://127.0.0.1:{preferredPort}/");
-                        _listener.Start();
-
+                        _listener = CreateAndStartListener(preferredPort);
                         _port = preferredPort;
                         started = true;
                     }
@@ -418,11 +469,7 @@ namespace UnitySkills
                     {
                         try
                         {
-                            _listener = new HttpListener();
-                            _listener.Prefixes.Add($"{_prefixBase}{p}/");
-                            _listener.Prefixes.Add($"http://127.0.0.1:{p}/");
-                            _listener.Start();
-
+                            _listener = CreateAndStartListener(p);
                             _port = p;
                             started = true;
                             break;
@@ -459,7 +506,7 @@ namespace UnitySkills
 
                 // These calls are safe here because Start() is called from Main thread
                 var skillCount = SkillRouter.GetManifest().Split('\n').Length;
-                SkillsLogger.Log($"REST Server started at {_prefix}");
+                SkillsLogger.Log($"REST Server started at {Url}");
                 SkillsLogger.Log($"{skillCount} skills loaded | Instance: {RegistryService.InstanceId}");
                 SkillsLogger.LogVerbose($"Domain Reload Recovery: ENABLED (AutoStart={AutoStart})");
 
@@ -951,7 +998,11 @@ namespace UnitySkills
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 // 1. Reachability test
-                var hosts = new[] { "localhost", "127.0.0.1" };
+                var hosts = new List<string> { "localhost", "127.0.0.1" };
+                string serverIp = ServerIp;
+                if (serverIp != "0.0.0.0" && serverIp != "127.0.0.1")
+                    hosts.Insert(0, serverIp);
+
                 foreach (var host in hosts)
                 {
                     string url = $"http://{host}:{port}/health";
@@ -999,4 +1050,3 @@ namespace UnitySkills
         }
     }
 }
-

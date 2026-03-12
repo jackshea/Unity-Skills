@@ -3,6 +3,7 @@ using UnityEditor;
 using System.Linq;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Net;
 
 namespace UnitySkills
 {
@@ -29,6 +30,7 @@ namespace UnitySkills
         private bool _autoStartServer = true;
         private string _customInstallPath = "";
         private string _customAgentName = "Custom";
+        private string _serverIpInput = "";
 
         // Colors
         private static readonly Color SuccessColor = new Color(0.3f, 0.8f, 0.4f);
@@ -57,6 +59,7 @@ namespace UnitySkills
         {
             RefreshSkillsList();
             _serverRunning = SkillsHttpServer.IsRunning;
+            _serverIpInput = SkillsHttpServer.ServerIp;
             EditorApplication.update += OnEditorUpdate;
         }
 
@@ -262,6 +265,36 @@ namespace UnitySkills
                 }
                 EditorGUILayout.EndHorizontal();
 
+                // Server IP
+                EditorGUILayout.BeginHorizontal();
+                var ipLabel = Localization.Current == Localization.Language.Chinese ? "服务器 IP" : "Server IP";
+                EditorGUILayout.LabelField(ipLabel + ":", GUILayout.Width(60));
+                var newServerIp = EditorGUILayout.DelayedTextField(_serverIpInput);
+                if (newServerIp != _serverIpInput)
+                {
+                    _serverIpInput = newServerIp;
+                }
+                EditorGUILayout.EndHorizontal();
+
+                DrawColoredLabel(Localization.Current == Localization.Language.Chinese
+                    ? "支持 IPv4 地址，默认 0.0.0.0。修改后会自动规范化，运行中修改会自动重启服务器。"
+                    : "Supports IPv4 addresses. Default is 0.0.0.0. Changes are normalized automatically and restart the server if it is running.",
+                    MutedColor, false);
+
+                var normalizedServerIp = NormalizeServerIpInput(_serverIpInput);
+                if (normalizedServerIp != SkillsHttpServer.ServerIp)
+                {
+                    SkillsHttpServer.ServerIp = normalizedServerIp;
+                    _serverIpInput = SkillsHttpServer.ServerIp;
+
+                    if (_serverRunning)
+                    {
+                        SkillsHttpServer.Stop();
+                        SkillsHttpServer.Start(SkillsHttpServer.PreferredPort);
+                        _serverRunning = SkillsHttpServer.IsRunning;
+                    }
+                }
+
                 // Request Timeout
                 EditorGUILayout.BeginHorizontal();
                 var timeoutLabel = Localization.Current == Localization.Language.Chinese ? "请求超时" : "Timeout";
@@ -327,6 +360,18 @@ namespace UnitySkills
                     EditorGUILayout.TextArea(_testResult, GUILayout.Height(80));
                 }
             });
+        }
+
+        private static string NormalizeServerIpInput(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "0.0.0.0";
+
+            value = value.Trim();
+            if (string.Equals(value, "localhost", System.StringComparison.OrdinalIgnoreCase))
+                return "127.0.0.1";
+
+            return IPAddress.TryParse(value, out var parsed) ? parsed.ToString() : "0.0.0.0";
         }
 
         private void DrawSkillsTab()
