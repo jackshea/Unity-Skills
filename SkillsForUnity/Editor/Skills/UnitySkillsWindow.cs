@@ -377,7 +377,10 @@ namespace UnitySkills
             if (string.Equals(value, "localhost", System.StringComparison.OrdinalIgnoreCase))
                 return "127.0.0.1";
 
-            return IPAddress.TryParse(value, out var parsed) ? parsed.ToString() : "0.0.0.0";
+            return IPAddress.TryParse(value, out var parsed) &&
+                   parsed.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? parsed.ToString()
+                : "0.0.0.0";
         }
 
         private void DrawSkillsTab()
