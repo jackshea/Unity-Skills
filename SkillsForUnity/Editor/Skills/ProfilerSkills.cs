@@ -17,12 +17,12 @@ namespace UnitySkills
         private static readonly Type s_UnityStatsType =
             typeof(Editor).Assembly.GetType("UnityEditor.UnityStats");
 
-        private static float GetStatFloat(string name)
+        private static float? GetStatFloat(string name)
         {
             var prop = s_UnityStatsType?.GetProperty(name, BindingFlags.Public | BindingFlags.Static);
-            if (prop == null) return -1f;
+            if (prop == null) return null;
             try { return Convert.ToSingle(prop.GetValue(null)); }
-            catch { return -1f; }
+            catch { return null; }
         }
 
         private static int GetStatInt(string name)
@@ -33,22 +33,26 @@ namespace UnitySkills
             catch { return -1; }
         }
 
-        [UnitySkill("profiler_get_stats", "Get performance statistics (FPS, Memory, Batches)")]
+        [UnitySkill("profiler_get_stats", "Get performance statistics (FPS, Memory, Batches)",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "fps", "memory", "batches", "performance" },
+            Outputs = new[] { "fps", "frameTime", "triangles", "batches", "memory" },
+            ReadOnly = true)]
         public static object ProfilerGetStats()
         {
             long totalAllocatedMemory = Profiler.GetTotalAllocatedMemoryLong();
             long totalReservedMemory = Profiler.GetTotalReservedMemoryLong();
             long totalUnusedReservedMemory = Profiler.GetTotalUnusedReservedMemoryLong();
 
-            float frameTime = GetStatFloat("frameTime");
-            float fps = frameTime > 0 ? 1000f / frameTime : 0f;
+            float? frameTime = GetStatFloat("frameTime");
+            float? fps = frameTime.HasValue && frameTime.Value > 0 ? 1000f / frameTime.Value : null;
 
             int visibleSkinnedMeshes = 0;
-            foreach (var smr in UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>())
+            foreach (var smr in FindHelper.FindAll<SkinnedMeshRenderer>())
                 if (smr.isVisible) visibleSkinnedMeshes++;
 
             int visibleAnimators = 0;
-            foreach (var anim in UnityEngine.Object.FindObjectsOfType<Animator>())
+            foreach (var anim in FindHelper.FindAll<Animator>())
             {
                 var renderer = anim.GetComponent<Renderer>();
                 if (renderer != null && renderer.isVisible) visibleAnimators++;
@@ -56,6 +60,7 @@ namespace UnitySkills
 
             return new
             {
+                success = true,
                 fps, frameTime,
                 renderTime = GetStatFloat("renderTime"),
                 triangles = GetStatInt("triangles"),
@@ -78,7 +83,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("profiler_get_memory", "Get memory usage overview (total allocated, reserved, mono heap)")]
+        [UnitySkill("profiler_get_memory", "Get memory usage overview (total allocated, reserved, mono heap)",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "heap", "allocated" },
+            Outputs = new[] { "totalAllocatedMB", "totalReservedMB", "unusedReservedMB", "monoHeapMB", "monoUsedMB" },
+            ReadOnly = true)]
         public static object ProfilerGetMemory()
         {
             return new
@@ -92,7 +101,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("profiler_get_runtime_memory", "Get top N objects by runtime memory usage in the scene")]
+        [UnitySkill("profiler_get_runtime_memory", "Get top N objects by runtime memory usage in the scene",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "runtime", "objects" },
+            Outputs = new[] { "totalTrackedMB", "showing", "objects" },
+            ReadOnly = true)]
         public static object ProfilerGetRuntimeMemory(int limit = 20)
         {
             var allObjects = Resources.FindObjectsOfTypeAll<UnityEngine.Object>();
@@ -110,7 +123,11 @@ namespace UnitySkills
             return new { success = true, totalTrackedMB = totalMem / (1024f * 1024f), showing = top.Length, objects = top };
         }
 
-        [UnitySkill("profiler_get_texture_memory", "Get memory usage of all loaded textures")]
+        [UnitySkill("profiler_get_texture_memory", "Get memory usage of all loaded textures",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "texture", "vram" },
+            Outputs = new[] { "totalCount", "totalMB", "topTextures" },
+            ReadOnly = true)]
         public static object ProfilerGetTextureMemory(int limit = 50)
         {
             var textures = Resources.FindObjectsOfTypeAll<Texture>();
@@ -127,7 +144,11 @@ namespace UnitySkills
                 topTextures = items.OrderByDescending(i => i.size).Take(limit).Select(i => i.info).ToArray() };
         }
 
-        [UnitySkill("profiler_get_mesh_memory", "Get memory usage of all loaded meshes")]
+        [UnitySkill("profiler_get_mesh_memory", "Get memory usage of all loaded meshes",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "mesh", "vertices" },
+            Outputs = new[] { "totalCount", "totalMB", "topMeshes" },
+            ReadOnly = true)]
         public static object ProfilerGetMeshMemory(int limit = 50)
         {
             var meshes = Resources.FindObjectsOfTypeAll<Mesh>();
@@ -143,7 +164,11 @@ namespace UnitySkills
                 topMeshes = items.OrderByDescending(i => i.size).Take(limit).Select(i => i.info).ToArray() };
         }
 
-        [UnitySkill("profiler_get_material_memory", "Get memory usage of all loaded materials")]
+        [UnitySkill("profiler_get_material_memory", "Get memory usage of all loaded materials",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "material", "shader" },
+            Outputs = new[] { "totalCount", "totalMB", "topMaterials" },
+            ReadOnly = true)]
         public static object ProfilerGetMaterialMemory(int limit = 50)
         {
             var materials = Resources.FindObjectsOfTypeAll<Material>();
@@ -159,7 +184,11 @@ namespace UnitySkills
                 topMaterials = items.OrderByDescending(i => i.size).Take(limit).Select(i => i.info).ToArray() };
         }
 
-        [UnitySkill("profiler_get_audio_memory", "Get memory usage of all loaded AudioClips")]
+        [UnitySkill("profiler_get_audio_memory", "Get memory usage of all loaded AudioClips",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "memory", "audio", "clips" },
+            Outputs = new[] { "totalCount", "totalMB", "topClips" },
+            ReadOnly = true)]
         public static object ProfilerGetAudioMemory(int limit = 50)
         {
             var clips = Resources.FindObjectsOfTypeAll<AudioClip>();
@@ -175,7 +204,11 @@ namespace UnitySkills
                 topClips = items.OrderByDescending(i => i.size).Take(limit).Select(i => i.info).ToArray() };
         }
 
-        [UnitySkill("profiler_get_object_count", "Count all loaded objects grouped by type")]
+        [UnitySkill("profiler_get_object_count", "Count all loaded objects grouped by type",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "objects", "count", "types" },
+            Outputs = new[] { "totalObjects", "topTypes" },
+            ReadOnly = true)]
         public static object ProfilerGetObjectCount(int topN = 20)
         {
             var all = Resources.FindObjectsOfTypeAll<UnityEngine.Object>();
@@ -185,7 +218,11 @@ namespace UnitySkills
             return new { success = true, totalObjects = all.Length, topTypes = groups };
         }
 
-        [UnitySkill("profiler_get_rendering_stats", "Get rendering statistics (batches, triangles, vertices, etc.)")]
+        [UnitySkill("profiler_get_rendering_stats", "Get rendering statistics (batches, triangles, vertices, etc.)",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "rendering", "drawcalls", "batches" },
+            Outputs = new[] { "frameTime", "renderTime", "triangles", "vertices", "batches", "drawCalls" },
+            ReadOnly = true)]
         public static object ProfilerGetRenderingStats()
         {
             return new
@@ -205,7 +242,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("profiler_get_asset_bundle_stats", "Get information about all loaded AssetBundles")]
+        [UnitySkill("profiler_get_asset_bundle_stats", "Get information about all loaded AssetBundles",
+            Category = SkillCategory.Profiler, Operation = SkillOperation.Query,
+            Tags = new[] { "profiler", "assetbundle", "loaded", "stats" },
+            Outputs = new[] { "count", "bundles" },
+            ReadOnly = true)]
         public static object ProfilerGetAssetBundleStats()
         {
             var bundles = AssetBundle.GetAllLoadedAssetBundles().ToArray();

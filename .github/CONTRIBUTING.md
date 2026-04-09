@@ -15,9 +15,11 @@ Thank you for contributing to Unity-Skills!
 
 > ⚠️ **Required | 必须完成**
 
-- [ ] Import into Unity and verify no errors | 在 Unity 中导入并确认无报错
+- [ ] Import into Unity 2022.3+ or Unity 6 and verify no errors | 在 Unity 2022.3+ 或 Unity 6 中导入并确认无报错
 - [ ] Test Skills work correctly in your AI tool (Claude Code, Cursor, etc.) | 在你的 AI 工具中测试 Skill 能正常使用
 - [ ] Run HTTP server and verify endpoints respond | 启动 HTTP 服务并验证接口响应正常
+
+> Maintenance baseline | 维护基线：官方新增功能开发、回归验证与适配以 **Unity 2022.3+ / Unity 6** 为主。仓库可能保留部分旧版兼容逻辑，但不再作为主要适配目标。
 
 ## Commit Message Format | 提交信息格式
 
@@ -63,20 +65,26 @@ public static object YourSkill(params)
 
 ## Version Update | 版本号更新
 
-Update **6 locations** when releasing | 发布时需同步更新 6 处：
+Update **10 locations** when releasing | 发布时需同步更新 10 处：
 
 | File | Location |
 |------|----------|
-| `agent.md` | Line 12 version table |
-| `package.json` | `"version"` field |
+| `SkillsForUnity/Editor/Skills/SkillsLogger.cs` | `Version` constant (single C# source of truth) |
+| `agent.md` | Version table and release notes |
+| `SkillsForUnity/package.json` | `"version"` field |
 | `CHANGELOG.md` | Add new entry at top |
-| `SkillsHttpServer.cs` | `version` variable |
-| `SkillRouter.cs` | `version` variable |
-| `README.md` | Module table version tag |
+| `SkillsForUnity/unity-skills~/scripts/unity_skills.py` | `__version__` |
+| `README.md` | Release URL/version references and counts |
+| `README_EN.md` | Release URL/version references and counts |
+| `docs/SETUP_GUIDE.md` | Timeout, baseline, and installation details |
+| `SkillsForUnity/unity-skills~/SKILL.md` | Root skill snapshot and behavior notes |
+| `SkillsForUnity/unity-skills~/skills/SKILL.md` | Module index and coverage summary |
+
+> If Unity baseline, skill counts, advisory-module counts, or install layout change, also update the matching `.github` docs/templates. | 若 Unity 基线、技能数、advisory 模块数或安装结构有变化，也要同步更新 `.github` 下相关文档和模板。
 
 Verify command | 检查命令：
 ```bash
-grep -rn "x.x.x" --include="*.cs" --include="*.json" --include="*.md" | grep -E "version|版本"
+rg -n "1\\.6\\.2|2022\\.3\\+|447|15 分钟|15 minutes|SkillsLogger.Version|__version__" agent.md CHANGELOG.md README.md README_EN.md docs/SETUP_GUIDE.md SkillsForUnity/unity-skills~/SKILL.md SkillsForUnity/unity-skills~/skills/SKILL.md SkillsForUnity/package.json SkillsForUnity/unity-skills~/scripts/unity_skills.py SkillsForUnity/Editor/Skills/SkillsLogger.cs
 ```
 
 ## Feedback | 问题反馈

@@ -99,7 +99,11 @@ namespace UnitySkills
         
         #region Material Creation & Assignment
 
-        [UnitySkill("material_create", "Create a new material (auto-detects render pipeline if shader not specified). savePath can be a folder or full path.")]
+        [UnitySkill("material_create", "Create a new material (auto-detects render pipeline if shader not specified). savePath can be a folder or full path.",
+            Category = SkillCategory.Material, Operation = SkillOperation.Create,
+            Tags = new[] { "material", "shader", "pipeline", "asset" },
+            Outputs = new[] { "name", "shader", "path", "renderPipeline", "instanceId" },
+            TracksWorkflow = true)]
         public static object MaterialCreate(string name, string shaderName = null, string savePath = null)
         {
             if (!string.IsNullOrEmpty(savePath) && Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
@@ -155,12 +159,28 @@ namespace UnitySkills
                 WorkflowManager.SnapshotObject(material, SnapshotType.Created);
                 AssetDatabase.SaveAssets();
             }
+            else
+            {
+                // No savePath: return instanceId so caller can reference or destroy later
+                var pipelineType2 = ProjectSkills.DetectRenderPipeline();
+                return new {
+                    success = true,
+                    name,
+                    shader = shaderName,
+                    path = (string)null,
+                    instanceId = material.GetInstanceID(),
+                    renderPipeline = pipelineType2.ToString(),
+                    colorProperty = ProjectSkills.GetColorPropertyName(),
+                    textureProperty = ProjectSkills.GetMainTexturePropertyName(),
+                    warning = "Material created in memory only (no savePath). It will be lost on editor restart. Use asset_save or specify savePath to persist."
+                };
+            }
 
             var pipelineType = ProjectSkills.DetectRenderPipeline();
-            return new { 
-                success = true, 
-                name, 
-                shader = shaderName, 
+            return new {
+                success = true,
+                name,
+                shader = shaderName,
                 path = savePath,
                 renderPipeline = pipelineType.ToString(),
                 colorProperty = ProjectSkills.GetColorPropertyName(),
@@ -168,7 +188,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("material_assign", "Assign a material asset to a renderer (supports name/instanceId/path)")]
+        [UnitySkill("material_assign", "Assign a material asset to a renderer (supports name/instanceId/path)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "material", "assign", "renderer" },
+            Outputs = new[] { "gameObject", "material" },
+            RequiresInput = new[] { "gameObject", "materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialAssign(string name = null, int instanceId = 0, string path = null, string materialPath = null)
         {
             if (Validate.Required(materialPath, "materialPath") is object err) return err;
@@ -191,37 +216,48 @@ namespace UnitySkills
             return new { success = true, gameObject = go.name, material = materialPath };
         }
 
-        [UnitySkill("material_create_batch", "Create multiple materials (Efficient). items: JSON array of {name, shaderName?, savePath?}")]
+        [UnitySkill("material_create_batch", "Create multiple materials (Efficient). items: JSON array of {name, shaderName?, savePath?}",
+            Category = SkillCategory.Material, Operation = SkillOperation.Create,
+            Tags = new[] { "material", "batch", "shader", "pipeline" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            TracksWorkflow = true)]
         public static object MaterialCreateBatch(string items)
         {
             return BatchExecutor.Execute<BatchMaterialCreateItem>(items, item =>
             {
                 var result = MaterialCreate(item.name, item.shaderName, item.savePath);
-                var json = Newtonsoft.Json.JsonConvert.SerializeObject(result);
-                if (json.Contains("\"error\""))
-                    throw new System.Exception(((dynamic)result).error);
+                if (SkillResultHelper.TryGetError(result, out string errorText))
+                    throw new System.Exception(errorText);
                 return result;
             }, item => item.name);
         }
 
         private class BatchMaterialCreateItem { public string name { get; set; } public string shaderName { get; set; } public string savePath { get; set; } }
 
-        [UnitySkill("material_assign_batch", "Assign materials to multiple objects (Efficient). items: JSON array of {name, materialPath}")]
+        [UnitySkill("material_assign_batch", "Assign materials to multiple objects (Efficient). items: JSON array of {name, materialPath}",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "material", "assign", "batch", "renderer" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            RequiresInput = new[] { "gameObject", "materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialAssignBatch(string items)
         {
             return BatchExecutor.Execute<BatchMaterialAssignItem>(items, item =>
             {
                 var result = MaterialAssign(name: item.name, instanceId: item.instanceId, path: item.path, materialPath: item.materialPath);
-                var json = Newtonsoft.Json.JsonConvert.SerializeObject(result);
-                if (json.Contains("\"error\""))
-                    throw new System.Exception(((dynamic)result).error);
+                if (SkillResultHelper.TryGetError(result, out string errorText))
+                    throw new System.Exception(errorText);
                 return result;
             }, item => item.name ?? item.path);
         }
 
         private class BatchMaterialAssignItem { public string name { get; set; } public int instanceId { get; set; } public string path { get; set; } public string materialPath { get; set; } }
         
-        [UnitySkill("material_duplicate", "Duplicate an existing material")]
+        [UnitySkill("material_duplicate", "Duplicate an existing material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Create,
+            Tags = new[] { "material", "duplicate", "copy", "asset" },
+            Outputs = new[] { "name", "path", "sourcePath", "shader" },
+            RequiresInput = new[] { "materialPath" })]
         public static object MaterialDuplicate(string sourcePath, string newName, string savePath = null)
         {
             if (Validate.Required(sourcePath, "sourcePath") is object err) return err;
@@ -264,7 +300,12 @@ namespace UnitySkills
         
         #region Color & Emission
 
-        [UnitySkill("material_set_color", "Set a color property on a material with optional HDR intensity for emission")]
+        [UnitySkill("material_set_color", "Set a color property on a material with optional HDR intensity for emission",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "color", "hdr", "emission", "rendering" },
+            Outputs = new[] { "color", "propertyUsed", "intensity", "hdrEnabled" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialSetColor(string name = null, int instanceId = 0, string path = null, 
             float r = 1, float g = 1, float b = 1, float a = 1, 
             string propertyName = null, float intensity = 1.0f)
@@ -332,7 +373,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("material_set_colors_batch", "Set colors on multiple GameObjects in a single call. items is a JSON array like [{name:'Obj1',r:1,g:0,b:0},{name:'Obj2',r:0,g:1,b:0}]. Much more efficient than calling material_set_color multiple times.")]
+        [UnitySkill("material_set_colors_batch", "Set colors on multiple GameObjects in a single call. items is a JSON array like [{name:'Obj1',r:1,g:0,b:0},{name:'Obj2',r:0,g:1,b:0}]. Much more efficient than calling material_set_color multiple times.",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "color", "batch", "rendering" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialSetColorsBatch(string items = null, string propertyName = null)
         {
             // Auto-detect color property if not specified
@@ -380,7 +426,12 @@ namespace UnitySkills
             public float a { get; set; } = 1f;
         }
 
-        [UnitySkill("material_set_emission", "Set emission color with HDR intensity and auto-enable emission")]
+        [UnitySkill("material_set_emission", "Set emission color with HDR intensity and auto-enable emission",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "emission", "hdr", "glow", "lighting" },
+            Outputs = new[] { "emissionColor", "intensity", "hdrColor", "emissionEnabled" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialSetEmission(string name = null, int instanceId = 0, string path = null,
             float r = 1, float g = 1, float b = 1, float intensity = 1.0f, bool enableEmission = true)
         {
@@ -439,16 +490,19 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("material_set_emission_batch", "Set emission on multiple objects (Efficient). items: JSON array of {name, r, g, b, intensity?, enableEmission?}")]
+        [UnitySkill("material_set_emission_batch", "Set emission on multiple objects (Efficient). items: JSON array of {name, r, g, b, intensity?, enableEmission?}",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "emission", "hdr", "batch", "lighting" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetEmissionBatch(string items)
         {
             return BatchExecutor.Execute<BatchEmissionItem>(items, item =>
             {
                 var result = MaterialSetEmission(name: item.name, instanceId: item.instanceId, path: item.path,
                     r: item.r, g: item.g, b: item.b, intensity: item.intensity > 0 ? item.intensity : 1f, enableEmission: item.enableEmission);
-                var json = Newtonsoft.Json.JsonConvert.SerializeObject(result);
-                if (json.Contains("\"error\""))
-                    throw new System.Exception(((dynamic)result).error);
+                if (SkillResultHelper.TryGetError(result, out string errorText))
+                    throw new System.Exception(errorText);
                 return result;
             }, item => item.name ?? item.path);
         }
@@ -459,7 +513,12 @@ namespace UnitySkills
         
         #region Property Setters
 
-        [UnitySkill("material_set_texture", "Set a texture on a material (auto-detects property name for render pipeline)")]
+        [UnitySkill("material_set_texture", "Set a texture on a material (auto-detects property name for render pipeline)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "texture", "material", "rendering" },
+            Outputs = new[] { "texture", "propertyUsed" },
+            RequiresInput = new[] { "gameObject|materialPath", "texturePath" },
+            TracksWorkflow = true)]
         public static object MaterialSetTexture(string name = null, int instanceId = 0, string path = null, string texturePath = null, string propertyName = null)
         {
             if (Validate.Required(texturePath, "texturePath") is object err) return err;
@@ -491,7 +550,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("material_set_float", "Set a float property on a material")]
+        [UnitySkill("material_set_float", "Set a float property on a material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "property", "float", "material" },
+            Outputs = new[] { "property", "value" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialSetFloat(string name = null, int instanceId = 0, string path = null, string propertyName = null, float value = 0)
         {
             if (Validate.Required(propertyName, "propertyName") is object err) return err;
@@ -517,7 +581,11 @@ namespace UnitySkills
             return new { success = true, target = go != null ? go.name : path, property = propertyName, value };
         }
         
-        [UnitySkill("material_set_int", "Set an integer property on a material")]
+        [UnitySkill("material_set_int", "Set an integer property on a material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "property", "integer", "material" },
+            Outputs = new[] { "property", "value" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetInt(string name = null, int instanceId = 0, string path = null, string propertyName = null, int value = 0)
         {
             if (Validate.Required(propertyName, "propertyName") is object err) return err;
@@ -542,7 +610,11 @@ namespace UnitySkills
             return new { success = true, target = go != null ? go.name : path, property = propertyName, value };
         }
         
-        [UnitySkill("material_set_vector", "Set a vector4 property on a material")]
+        [UnitySkill("material_set_vector", "Set a vector4 property on a material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "property", "vector", "material" },
+            Outputs = new[] { "property", "value" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetVector(string name = null, int instanceId = 0, string path = null, 
             string propertyName = null, float x = 0, float y = 0, float z = 0, float w = 0)
         {
@@ -568,7 +640,11 @@ namespace UnitySkills
             return new { success = true, target = go != null ? go.name : path, property = propertyName, value = new { x, y, z, w } };
         }
         
-        [UnitySkill("material_set_texture_offset", "Set texture offset (tiling position)")]
+        [UnitySkill("material_set_texture_offset", "Set texture offset (tiling position)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "texture", "offset", "tiling", "uv" },
+            Outputs = new[] { "property", "offset" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetTextureOffset(string name = null, int instanceId = 0, string path = null,
             string propertyName = null, float x = 0, float y = 0)
         {
@@ -587,7 +663,11 @@ namespace UnitySkills
             return new { success = true, target = go != null ? go.name : path, property = propertyName, offset = new { x, y } };
         }
         
-        [UnitySkill("material_set_texture_scale", "Set texture scale (tiling)")]
+        [UnitySkill("material_set_texture_scale", "Set texture scale (tiling)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "texture", "scale", "tiling", "uv" },
+            Outputs = new[] { "property", "scale" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetTextureScale(string name = null, int instanceId = 0, string path = null,
             string propertyName = null, float x = 1, float y = 1)
         {
@@ -610,7 +690,11 @@ namespace UnitySkills
         
         #region Keywords & Render State
 
-        [UnitySkill("material_set_keyword", "Enable or disable a shader keyword (e.g., _EMISSION, _NORMALMAP, _METALLICGLOSSMAP)")]
+        [UnitySkill("material_set_keyword", "Enable or disable a shader keyword (e.g., _EMISSION, _NORMALMAP, _METALLICGLOSSMAP)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "keyword", "shader", "rendering" },
+            Outputs = new[] { "keyword", "enabled", "allKeywords" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetKeyword(string name = null, int instanceId = 0, string path = null, 
             string keyword = null, bool enable = true)
         {
@@ -638,7 +722,11 @@ namespace UnitySkills
             };
         }
         
-        [UnitySkill("material_set_render_queue", "Set material render queue (-1 for shader default, 2000=Geometry, 2450=AlphaTest, 3000=Transparent)")]
+        [UnitySkill("material_set_render_queue", "Set material render queue (-1 for shader default, 2000=Geometry, 2450=AlphaTest, 3000=Transparent)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "renderQueue", "sorting", "transparency" },
+            Outputs = new[] { "renderQueue", "queueCategory" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetRenderQueue(string name = null, int instanceId = 0, string path = null, int renderQueue = -1)
         {
             var (material, go, error) = FindMaterial(name, instanceId, path);
@@ -669,7 +757,12 @@ namespace UnitySkills
             };
         }
         
-        [UnitySkill("material_set_shader", "Change the shader of a material")]
+        [UnitySkill("material_set_shader", "Change the shader of a material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "shader", "material", "pipeline" },
+            Outputs = new[] { "shader" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            TracksWorkflow = true)]
         public static object MaterialSetShader(string name = null, int instanceId = 0, string path = null, string shaderName = null)
         {
             if (Validate.Required(shaderName, "shaderName") is object err) return err;
@@ -699,7 +792,11 @@ namespace UnitySkills
             };
         }
         
-        [UnitySkill("material_set_gi_flags", "Set global illumination flags (None, RealtimeEmissive, BakedEmissive, EmissiveIsBlack)")]
+        [UnitySkill("material_set_gi_flags", "Set global illumination flags (None, RealtimeEmissive, BakedEmissive, EmissiveIsBlack)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Modify,
+            Tags = new[] { "gi", "globalIllumination", "emission", "lighting" },
+            Outputs = new[] { "giFlags" },
+            RequiresInput = new[] { "gameObject|materialPath" })]
         public static object MaterialSetGIFlags(string name = null, int instanceId = 0, string path = null, string flags = "RealtimeEmissive")
         {
             var (material, go, error) = FindMaterial(name, instanceId, path);
@@ -731,7 +828,12 @@ namespace UnitySkills
         
         #region Property Query
 
-        [UnitySkill("material_get_properties", "Get all properties of a material (colors, floats, textures, keywords)")]
+        [UnitySkill("material_get_properties", "Get all properties of a material (colors, floats, textures, keywords)",
+            Category = SkillCategory.Material, Operation = SkillOperation.Query,
+            Tags = new[] { "property", "inspect", "shader", "material" },
+            Outputs = new[] { "shader", "renderQueue", "keywords", "giFlags", "properties" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            ReadOnly = true)]
         public static object MaterialGetProperties(string name = null, int instanceId = 0, string path = null)
         {
             var (material, go, error) = FindMaterial(name, instanceId, path);
@@ -796,7 +898,12 @@ namespace UnitySkills
             };
         }
         
-        [UnitySkill("material_get_keywords", "Get all enabled shader keywords on a material")]
+        [UnitySkill("material_get_keywords", "Get all enabled shader keywords on a material",
+            Category = SkillCategory.Material, Operation = SkillOperation.Query,
+            Tags = new[] { "keyword", "shader", "inspect" },
+            Outputs = new[] { "shader", "enabledKeywords", "commonKeywordStatus" },
+            RequiresInput = new[] { "gameObject|materialPath" },
+            ReadOnly = true)]
         public static object MaterialGetKeywords(string name = null, int instanceId = 0, string path = null)
         {
             var (material, go, error) = FindMaterial(name, instanceId, path);

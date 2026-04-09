@@ -2,9 +2,29 @@ using UnityEngine;
 using UnityEditor;
 using System.Linq;
 using System.Collections.Generic;
+using UnityEngine.SceneManagement;
 
 namespace UnitySkills
 {
+    /// <summary>
+    /// Compatibility helper for FindObjectsByType (Unity 6+) / FindObjectsOfType fallback.
+    /// </summary>
+    internal static class FindHelper
+    {
+        internal static T[] FindAll<T>(bool includeInactive = false) where T : Object
+        {
+#if UNITY_6000_0_OR_NEWER
+            return includeInactive
+                ? Object.FindObjectsByType<T>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                : Object.FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+            return includeInactive
+                ? Resources.FindObjectsOfTypeAll<T>()
+                : Object.FindObjectsOfType<T>();
+#endif
+        }
+    }
+
     /// <summary>
     /// Parameter validation helper - returns error object or null
     /// </summary>
@@ -91,8 +111,17 @@ namespace UnitySkills
     /// </summary>
     public static class GameObjectFinder
     {
-        // Request-level cache for GetAllSceneObjects - invalidated after each request via InvalidateCache()
-        private static List<GameObject> _cachedSceneObjects;
+        private sealed class SceneObjectCache
+        {
+            public readonly List<GameObject> Objects = new List<GameObject>();
+            public readonly Dictionary<int, string> PathsByInstanceId = new Dictionary<int, string>();
+            public readonly Dictionary<int, int> DepthsByInstanceId = new Dictionary<int, int>();
+            public readonly Dictionary<string, GameObject> PathLookup =
+                new Dictionary<string, GameObject>(System.StringComparer.OrdinalIgnoreCase);
+        }
+
+        // Request-level cache for scene traversal metadata - invalidated after each request via InvalidateCache()
+        private static SceneObjectCache _cachedSceneData;
         private static bool _cacheValid = false;
 
         /// <summary>
@@ -100,36 +129,123 @@ namespace UnitySkills
         /// </summary>
         public static void InvalidateCache()
         {
-            _cachedSceneObjects = null;
+            _cachedSceneData = null;
             _cacheValid = false;
         }
 
         /// <summary>
-        /// Efficiently iterate all GameObjects in scene using root traversal (faster than FindObjectsOfType).
-        /// Results are cached per-frame to avoid repeated traversals within the same request.
+        /// Build and cache scene traversal metadata once per request.
         /// </summary>
-        private static IEnumerable<GameObject> GetAllSceneObjects()
+        private static SceneObjectCache GetOrBuildSceneCache()
         {
-            if (_cachedSceneObjects != null && _cacheValid)
-                return _cachedSceneObjects;
+            if (_cachedSceneData != null && _cacheValid)
+                return _cachedSceneData;
 
-            var result = new List<GameObject>();
-            var roots = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
-            var stack = new Stack<Transform>();
+            var cache = new SceneObjectCache();
+            var roots = GetLoadedSceneRoots();
+            var stack = new Stack<(Transform transform, string path, string sceneName, int depth)>();
             foreach (var root in roots)
-                stack.Push(root.transform);
+                stack.Push((root.transform, root.name, root.scene.name, 0));
 
             while (stack.Count > 0)
             {
-                var t = stack.Pop();
-                result.Add(t.gameObject);
-                foreach (Transform child in t)
-                    stack.Push(child);
+                var (transform, path, sceneName, depth) = stack.Pop();
+                var gameObject = transform.gameObject;
+                var instanceId = gameObject.GetInstanceID();
+
+                cache.Objects.Add(gameObject);
+                cache.PathsByInstanceId[instanceId] = path;
+                cache.DepthsByInstanceId[instanceId] = depth;
+                AddPathLookup(cache.PathLookup, path, gameObject);
+
+                if (!string.IsNullOrEmpty(sceneName))
+                    AddPathLookup(cache.PathLookup, sceneName + "/" + path, gameObject);
+
+                foreach (Transform child in transform)
+                    stack.Push((child, path + "/" + child.name, sceneName, depth + 1));
             }
 
-            _cachedSceneObjects = result;
+            _cachedSceneData = cache;
             _cacheValid = true;
-            return result;
+            return cache;
+        }
+
+        /// <summary>
+        /// Efficiently iterate all GameObjects in scene using root traversal (faster than FindObjectsOfType).
+        /// Results are cached per request to avoid repeated traversals within the same skill execution.
+        /// </summary>
+        private static IEnumerable<GameObject> GetAllSceneObjects()
+        {
+            return GetOrBuildSceneCache().Objects;
+        }
+
+        /// <summary>
+        /// Get the cached scene object list for the current request.
+        /// </summary>
+        public static IReadOnlyList<GameObject> GetSceneObjects()
+        {
+            return GetOrBuildSceneCache().Objects;
+        }
+
+        /// <summary>
+        /// Get cached hierarchy depth for a scene object. Falls back to parent traversal for non-scene objects.
+        /// </summary>
+        public static int GetDepth(GameObject go)
+        {
+            if (go == null)
+                return 0;
+
+            var instanceId = go.GetInstanceID();
+            if (_cachedSceneData != null && _cacheValid &&
+                _cachedSceneData.DepthsByInstanceId.TryGetValue(instanceId, out var depth))
+                return depth;
+
+            depth = 0;
+            var parent = go.transform.parent;
+            while (parent != null)
+            {
+                depth++;
+                parent = parent.parent;
+            }
+
+            if (_cachedSceneData != null && _cacheValid)
+                _cachedSceneData.DepthsByInstanceId[instanceId] = depth;
+
+            return depth;
+        }
+
+        private static void AddPathLookup(Dictionary<string, GameObject> lookup, string path, GameObject go)
+        {
+            if (string.IsNullOrEmpty(path) || lookup.ContainsKey(path))
+                return;
+
+            lookup[path] = go;
+        }
+
+        private static string NormalizePathKey(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            var parts = path
+                .Split(new[] { '/' }, System.StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToArray();
+
+            return parts.Length == 0 ? null : string.Join("/", parts);
+        }
+
+        private static IEnumerable<GameObject> GetLoadedSceneRoots()
+        {
+            for (int sceneIndex = 0; sceneIndex < SceneManager.sceneCount; sceneIndex++)
+            {
+                var scene = SceneManager.GetSceneAt(sceneIndex);
+                if (!scene.IsValid() || !scene.isLoaded)
+                    continue;
+
+                foreach (var root in scene.GetRootGameObjects())
+                    yield return root;
+            }
         }
 
         /// <summary>
@@ -163,13 +279,7 @@ namespace UnitySkills
             // Priority 3: Simple name search (exact match first)
             if (!string.IsNullOrEmpty(name))
             {
-                // Try exact match with GameObject.Find
-                var go = GameObject.Find(name);
-                if (go != null)
-                    return go;
-
-                // Try case-insensitive exact match
-                go = FindByNameCaseInsensitive(name);
+                var go = FindByNameCaseInsensitive(name);
                 if (go != null)
                     return go;
 
@@ -182,13 +292,13 @@ namespace UnitySkills
             // Priority 4: Tag search
             if (!string.IsNullOrEmpty(tag))
             {
-                try
+                var go = GetAllSceneObjects().FirstOrDefault(candidate =>
                 {
-                    var go = GameObject.FindGameObjectWithTag(tag);
-                    if (go != null)
-                        return go;
-                }
-                catch { } // Tag might not exist
+                    try { return candidate.CompareTag(tag); }
+                    catch { return false; }
+                });
+                if (go != null)
+                    return go;
             }
 
             // Priority 5: Component type search
@@ -207,49 +317,66 @@ namespace UnitySkills
         /// </summary>
         public static GameObject FindByPath(string path)
         {
-            if (string.IsNullOrEmpty(path))
+            var normalizedPath = NormalizePathKey(path);
+            if (string.IsNullOrEmpty(normalizedPath))
                 return null;
 
-            var parts = path.Split('/');
+            var cache = GetOrBuildSceneCache();
+            if (cache.PathLookup.TryGetValue(normalizedPath, out var cachedGo))
+                return cachedGo;
+
+            var parts = normalizedPath.Split(new[] { '/' }, System.StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 0)
                 return null;
 
-            // First, find root objects
-            var rootObjects = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
-            
-            // Find first part in root (case-insensitive)
-            var current = rootObjects.FirstOrDefault(go => 
-                go.name.Equals(parts[0], System.StringComparison.OrdinalIgnoreCase));
-            if (current == null)
-                return null;
-
-            // Navigate down the hierarchy
-            for (int i = 1; i < parts.Length; i++)
+            foreach (var scene in Enumerable.Range(0, SceneManager.sceneCount)
+                .Select(SceneManager.GetSceneAt)
+                .Where(scene => scene.IsValid() && scene.isLoaded))
             {
-                Transform child = null;
-                
-                // Try exact match first
-                child = current.transform.Find(parts[i]);
-                
-                // Try case-insensitive match
-                if (child == null)
+                var rootObjects = scene.GetRootGameObjects();
+                int partIndex = 0;
+
+                if (parts.Length > 1 && scene.name.Equals(parts[0], System.StringComparison.OrdinalIgnoreCase))
+                    partIndex = 1;
+
+                if (partIndex >= parts.Length)
+                    continue;
+
+                var current = rootObjects.FirstOrDefault(go =>
+                    go.name.Equals(parts[partIndex], System.StringComparison.OrdinalIgnoreCase));
+                if (current == null)
+                    continue;
+
+                partIndex++;
+                while (partIndex < parts.Length && current != null)
                 {
-                    foreach (Transform t in current.transform)
-                    {
-                        if (t.name.Equals(parts[i], System.StringComparison.OrdinalIgnoreCase))
-                        {
-                            child = t;
-                            break;
-                        }
-                    }
+                    current = FindDirectChild(current, parts[partIndex]);
+                    partIndex++;
                 }
-                
-                if (child == null)
-                    return null;
-                current = child.gameObject;
+
+                if (current != null)
+                    return current;
             }
 
-            return current;
+            return null;
+        }
+
+        private static GameObject FindDirectChild(GameObject parent, string childName)
+        {
+            if (parent == null || string.IsNullOrEmpty(childName))
+                return null;
+
+            var exact = parent.transform.Find(childName);
+            if (exact != null)
+                return exact.gameObject;
+
+            foreach (Transform child in parent.transform)
+            {
+                if (child.name.Equals(childName, System.StringComparison.OrdinalIgnoreCase))
+                    return child.gameObject;
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -286,8 +413,7 @@ namespace UnitySkills
             var type = ComponentSkills.FindComponentType(componentType);
             if (type == null) return null;
 
-            var comp = Object.FindObjectOfType(type) as Component;
-            return comp?.gameObject;
+            return GetAllSceneObjects().FirstOrDefault(go => go.GetComponent(type) != null);
         }
 
         /// <summary>
@@ -297,19 +423,18 @@ namespace UnitySkills
         {
             IEnumerable<GameObject> results;
 
+            results = GetAllSceneObjects();
+
+            if (!includeInactive)
+                results = results.Where(go => go.activeInHierarchy);
+
             if (!string.IsNullOrEmpty(tag))
             {
-                try { results = GameObject.FindGameObjectsWithTag(tag); }
-                catch { results = new GameObject[0]; } // Tag may not exist
-            }
-            else if (includeInactive)
-            {
-                results = Resources.FindObjectsOfTypeAll<GameObject>()
-                    .Where(go => go.scene.isLoaded); // Only scene objects, not prefabs
-            }
-            else
-            {
-                results = GetAllSceneObjects();
+                results = results.Where(go =>
+                {
+                    try { return go.CompareTag(tag); }
+                    catch { return false; }
+                });
             }
 
             if (!string.IsNullOrEmpty(name))
@@ -343,6 +468,25 @@ namespace UnitySkills
                 path = parent.name + "/" + path;
                 parent = parent.parent;
             }
+
+            return path;
+        }
+
+        /// <summary>
+        /// Get the full hierarchy path using the request-level cache. Prefer this for large read-only traversals.
+        /// </summary>
+        public static string GetCachedPath(GameObject go)
+        {
+            if (go == null)
+                return null;
+
+            var instanceId = go.GetInstanceID();
+            var cache = GetOrBuildSceneCache();
+            if (cache.PathsByInstanceId.TryGetValue(instanceId, out var cachedPath))
+                return cachedPath;
+
+            var path = GetPath(go);
+            cache.PathsByInstanceId[instanceId] = path;
             return path;
         }
 
@@ -395,10 +539,10 @@ namespace UnitySkills
                 var type = ComponentSkills.FindComponentType(componentType);
                 if (type != null)
                 {
-                    var withComp = Object.FindObjectsOfType(type)
-                        .OfType<Component>()
+                    var withComp = GetAllSceneObjects()
+                        .Where(candidate => candidate.GetComponent(type) != null)
                         .Take(3)
-                        .Select(c => $"'{c.gameObject.name}' has {type.Name}");
+                        .Select(candidate => $"'{candidate.name}' has {type.Name}");
                     suggestions.AddRange(withComp);
                 }
             }
@@ -415,7 +559,7 @@ namespace UnitySkills
             if (string.IsNullOrEmpty(query)) return null;
 
             // Try as exact name
-            var go = GameObject.Find(query);
+            var go = FindByNameCaseInsensitive(query);
             if (go != null) return go;
 
             // Try as path
@@ -423,7 +567,8 @@ namespace UnitySkills
             if (go != null) return go;
 
             // Try as tag
-            try { go = GameObject.FindGameObjectWithTag(query); if (go != null) return go; } catch { /* Tag may not exist */ }
+            go = Find(tag: query);
+            if (go != null) return go;
 
             // Try finding "Main Camera" variations
             if (query.Equals("camera", System.StringComparison.OrdinalIgnoreCase) ||
@@ -434,14 +579,17 @@ namespace UnitySkills
                 if (go != null) return go;
                 
                 // Find any camera
-                var cam = Object.FindObjectOfType<Camera>();
+                var cam = GetAllSceneObjects()
+                    .Select(candidate => candidate.GetComponent<Camera>())
+                    .FirstOrDefault(component => component != null);
                 if (cam != null) return cam.gameObject;
             }
 
             // Try finding "Player" variations
             if (query.IndexOf("player", System.StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                try { go = GameObject.FindGameObjectWithTag("Player"); if (go != null) return go; } catch { /* Tag may not exist */ }
+                go = Find(tag: "Player");
+                if (go != null) return go;
             }
 
             // Try case-insensitive contains

@@ -10,13 +10,18 @@ namespace UnitySkills
 {
     /// <summary>
     /// UI Toolkit skills - create/edit USS/UXML files and configure UIDocument in scenes.
-    /// Requires Unity 2021.3+ (UI Toolkit runtime support).
+    /// Requires Unity 2022.3+ (package minimum supported version).
     /// </summary>
     public static class UIToolkitSkills
     {
+        private static readonly System.Text.UTF8Encoding Utf8NoBom = new System.Text.UTF8Encoding(false);
         // ============================ FILE OPERATIONS ============================
 
-        [UnitySkill("uitk_create_uss", "Create a USS stylesheet file for UI Toolkit")]
+        [UnitySkill("uitk_create_uss", "Create a USS stylesheet file for UI Toolkit",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "uss", "stylesheet", "ui-toolkit", "style" },
+            Outputs = new[] { "path", "lines" },
+            TracksWorkflow = true)]
         public static object UitkCreateUss(string savePath, string content = null)
         {
             if (Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
@@ -28,7 +33,7 @@ namespace UnitySkills
                 Directory.CreateDirectory(dir);
 
             var fileContent = content ?? DefaultUss(Path.GetFileNameWithoutExtension(savePath));
-            File.WriteAllText(savePath, fileContent, System.Text.Encoding.UTF8);
+            File.WriteAllText(savePath, fileContent, Utf8NoBom);
             AssetDatabase.ImportAsset(savePath);
 
             var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(savePath);
@@ -37,7 +42,11 @@ namespace UnitySkills
             return new { success = true, path = savePath, lines = fileContent.Split('\n').Length };
         }
 
-        [UnitySkill("uitk_create_uxml", "Create a UXML layout file for UI Toolkit")]
+        [UnitySkill("uitk_create_uxml", "Create a UXML layout file for UI Toolkit",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "uxml", "layout", "ui-toolkit", "visual-tree" },
+            Outputs = new[] { "path", "lines" },
+            TracksWorkflow = true)]
         public static object UitkCreateUxml(string savePath, string content = null, string ussPath = null)
         {
             if (Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
@@ -56,7 +65,7 @@ namespace UnitySkills
                 relUss = (uxmlDir == ussDir) ? Path.GetFileName(ussPath) : ussPath;
             }
             string fileContent = content ?? (relUss != null ? DefaultUxml(relUss) : DefaultUxml());
-            File.WriteAllText(savePath, fileContent, System.Text.Encoding.UTF8);
+            File.WriteAllText(savePath, fileContent, Utf8NoBom);
             AssetDatabase.ImportAsset(savePath);
 
             var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(savePath);
@@ -65,14 +74,19 @@ namespace UnitySkills
             return new { success = true, path = savePath, lines = fileContent.Split('\n').Length };
         }
 
-        [UnitySkill("uitk_read_file", "Read USS or UXML file content")]
+        [UnitySkill("uitk_read_file", "Read USS or UXML file content",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "read", "uss", "uxml", "file" },
+            Outputs = new[] { "path", "type", "lines", "content" },
+            RequiresInput = new[] { "filePath" },
+            ReadOnly = true)]
         public static object UitkReadFile(string filePath)
         {
             if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
             if (!File.Exists(filePath))
                 return new { error = $"File not found: {filePath}" };
 
-            var content = File.ReadAllText(filePath);
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
             return new
             {
                 path = filePath,
@@ -82,7 +96,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("uitk_write_file", "Write or overwrite a USS or UXML file")]
+        [UnitySkill("uitk_write_file", "Write or overwrite a USS or UXML file",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "write", "uss", "uxml", "file" },
+            Outputs = new[] { "path", "lines" },
+            TracksWorkflow = true)]
         public static object UitkWriteFile(string filePath, string content)
         {
             if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
@@ -98,13 +116,18 @@ namespace UnitySkills
                 if (existing != null) WorkflowManager.SnapshotObject(existing);
             }
 
-            File.WriteAllText(filePath, content, System.Text.Encoding.UTF8);
+            File.WriteAllText(filePath, content, Utf8NoBom);
             AssetDatabase.ImportAsset(filePath);
 
             return new { success = true, path = filePath, lines = content.Split('\n').Length };
         }
 
-        [UnitySkill("uitk_delete_file", "Delete a USS or UXML file")]
+        [UnitySkill("uitk_delete_file", "Delete a USS or UXML file",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Delete,
+            Tags = new[] { "delete", "uss", "uxml", "file" },
+            Outputs = new[] { "deleted" },
+            RequiresInput = new[] { "filePath" },
+            TracksWorkflow = true)]
         public static object UitkDeleteFile(string filePath)
         {
             if (Validate.SafePath(filePath, "filePath", isDelete: true) is object pathErr) return pathErr;
@@ -118,7 +141,11 @@ namespace UnitySkills
             return new { success = true, deleted = filePath };
         }
 
-        [UnitySkill("uitk_find_files", "Search for USS and/or UXML files in the project (type: uss/uxml/all)")]
+        [UnitySkill("uitk_find_files", "Search for USS and/or UXML files in the project (type: uss/uxml/all)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "find", "search", "uss", "uxml" },
+            Outputs = new[] { "count", "files" },
+            ReadOnly = true)]
         public static object UitkFindFiles(string type = "all", string folder = null, string filter = null, int limit = 200)
         {
             var searchFolder = string.IsNullOrEmpty(folder) ? "Assets" : folder;
@@ -155,7 +182,11 @@ namespace UnitySkills
 
         // ============================ SCENE OPERATIONS ============================
 
-        [UnitySkill("uitk_create_document", "Create a GameObject with UIDocument component in the scene")]
+        [UnitySkill("uitk_create_document", "Create a GameObject with UIDocument component in the scene",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "ui-document", "scene", "ui-toolkit", "visual-tree" },
+            Outputs = new[] { "name", "instanceId", "hasUxml", "hasPanelSettings", "sortOrder" },
+            TracksWorkflow = true)]
         public static object UitkCreateDocument(
             string name = "UIDocument",
             string uxmlPath = null,
@@ -227,7 +258,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("uitk_set_document", "Set UIDocument properties on an existing scene GameObject")]
+        [UnitySkill("uitk_set_document", "Set UIDocument properties on an existing scene GameObject",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Modify,
+            Tags = new[] { "ui-document", "configure", "uxml", "panel-settings" },
+            Outputs = new[] { "name", "instanceId", "visualTreeAsset", "panelSettings", "sortingOrder" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object UitkSetDocument(
             string name = null,
             int instanceId = 0,
@@ -275,7 +311,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("uitk_create_panel_settings", "Create a PanelSettings asset for UI Toolkit")]
+        [UnitySkill("uitk_create_panel_settings", "Create a PanelSettings asset for UI Toolkit",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "panel-settings", "asset", "scaling", "resolution" },
+            Outputs = new[] { "path", "scaleMode", "referenceResolution", "screenMatchMode" },
+            TracksWorkflow = true)]
         public static object UitkCreatePanelSettings(
             string savePath,
             string scaleMode = "ScaleWithScreenSize",
@@ -283,7 +323,7 @@ namespace UnitySkills
             int referenceResolutionY = 1080,
             string screenMatchMode = "MatchWidthOrHeight",
             string themeStyleSheetPath = null,
-            // General properties (Unity 2021.3+)
+            // General properties (Unity 2022.3+)
             string textSettingsPath = null,
             string targetTexturePath = null,
             int? targetDisplay = null,
@@ -362,7 +402,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("uitk_get_panel_settings", "Read all properties of a PanelSettings asset")]
+        [UnitySkill("uitk_get_panel_settings", "Read all properties of a PanelSettings asset",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "panel-settings", "inspect", "read", "properties" },
+            Outputs = new[] { "path", "scaleMode", "referenceResolution", "screenMatchMode", "dynamicAtlasSettings" },
+            RequiresInput = new[] { "assetPath" },
+            ReadOnly = true)]
         public static object UitkGetPanelSettings(string assetPath)
         {
             if (Validate.SafePath(assetPath, "assetPath") is object pathErr) return pathErr;
@@ -374,7 +419,7 @@ namespace UnitySkills
             var cc = settings.colorClearValue;
 
 #if UNITY_6000_0_OR_NEWER
-            // renderMode, colliderUpdateMode, colliderIsTrigger are internal — read via SerializedObject
+            // renderMode, colliderUpdateMode, and colliderIsTrigger are internal; read them via SerializedObject.
             var so = new SerializedObject(settings);
             var rmProp = so.FindProperty("m_RenderMode");
             int rmVal = rmProp != null ? rmProp.intValue : 0;
@@ -417,8 +462,12 @@ namespace UnitySkills
                 bindingLogLevel = settings.bindingLogLevel.ToString(),
                 colliderUpdateMode = colliderUpdateStr,
                 colliderIsTrigger = colliderIsTriggerVal,
+#if UNITY_6000_3_OR_NEWER
                 vertexBudget = settings.vertexBudget,
                 textureSlotCount = (int)settings.textureSlotCount
+#else
+                vertexBudget = settings.vertexBudget
+#endif
             };
 #else
             return new
@@ -451,7 +500,12 @@ namespace UnitySkills
 #endif
         }
 
-        [UnitySkill("uitk_set_panel_settings", "Modify properties on an existing PanelSettings asset")]
+        [UnitySkill("uitk_set_panel_settings", "Modify properties on an existing PanelSettings asset",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Modify,
+            Tags = new[] { "panel-settings", "configure", "scaling", "resolution" },
+            Outputs = new[] { "path", "scaleMode", "referenceResolution", "screenMatchMode" },
+            RequiresInput = new[] { "assetPath" },
+            TracksWorkflow = true)]
         public static object UitkSetPanelSettings(
             string assetPath,
             string scaleMode = null,
@@ -538,10 +592,14 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("uitk_list_documents", "List all UIDocument components in the active scene")]
+        [UnitySkill("uitk_list_documents", "List all UIDocument components in the active scene",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "list", "ui-document", "scene", "inspect" },
+            Outputs = new[] { "count", "documents" },
+            ReadOnly = true)]
         public static object UitkListDocuments()
         {
-            var docs = UnityEngine.Object.FindObjectsOfType<UIDocument>();
+            var docs = FindHelper.FindAll<UIDocument>();
             var result = docs.Select(doc => new
             {
                 name = doc.gameObject.name,
@@ -557,7 +615,12 @@ namespace UnitySkills
 
         // ============================ INSPECTION ============================
 
-        [UnitySkill("uitk_inspect_uxml", "Parse and display UXML element hierarchy (depth controls max traversal depth)")]
+        [UnitySkill("uitk_inspect_uxml", "Parse and display UXML element hierarchy (depth controls max traversal depth)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "inspect", "uxml", "hierarchy", "parse" },
+            Outputs = new[] { "path", "hierarchy" },
+            RequiresInput = new[] { "filePath" },
+            ReadOnly = true)]
         public static object UitkInspectUxml(string filePath, int depth = 5)
         {
             if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
@@ -566,7 +629,7 @@ namespace UnitySkills
 
             try
             {
-                var content = File.ReadAllText(filePath);
+                var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
                 var xdoc = XDocument.Parse(content);
                 var hierarchy = ParseXmlNode(xdoc.Root, 0, depth);
                 return new { path = filePath, hierarchy };
@@ -579,7 +642,11 @@ namespace UnitySkills
 
         // ============================ TEMPLATES ============================
 
-        [UnitySkill("uitk_create_from_template", "Create a UXML+USS file pair from a template (menu/hud/dialog/settings/inventory/list)")]
+        [UnitySkill("uitk_create_from_template", "Create a UXML+USS file pair from a template (menu/hud/dialog/settings/inventory/list/tab-view/toolbar/card/notification)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "template", "uxml", "uss", "scaffold" },
+            Outputs = new[] { "template", "ussPath", "uxmlPath", "name" },
+            TracksWorkflow = true)]
         public static object UitkCreateFromTemplate(string template, string savePath, string name = null)
         {
             if (Validate.Required(template, "template") is object tErr) return tErr;
@@ -601,8 +668,8 @@ namespace UnitySkills
 
             GetTemplateContent(template.ToLower(), uiName, $"{uiName}.uss", out var ussContent, out var uxmlContent);
 
-            File.WriteAllText(ussFilePath, ussContent, System.Text.Encoding.UTF8);
-            File.WriteAllText(uxmlFilePath, uxmlContent, System.Text.Encoding.UTF8);
+            File.WriteAllText(ussFilePath, ussContent, Utf8NoBom);
+            File.WriteAllText(uxmlFilePath, uxmlContent, Utf8NoBom);
             AssetDatabase.ImportAsset(ussFilePath);
             AssetDatabase.ImportAsset(uxmlFilePath);
 
@@ -616,7 +683,11 @@ namespace UnitySkills
 
         // ============================ BATCH ============================
 
-        [UnitySkill("uitk_create_batch", "Batch create USS/UXML files. items: JSON array of {type,savePath,content?,ussPath?}")]
+        [UnitySkill("uitk_create_batch", "Batch create USS/UXML files. items: JSON array of {type,savePath,content?,ussPath?}",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "batch", "uss", "uxml", "bulk" },
+            Outputs = new[] { "totalRequested", "succeeded", "failed", "results" },
+            TracksWorkflow = true)]
         public static object UitkCreateBatch(string items)
         {
             return BatchExecutor.Execute<UitkFileItem>(
@@ -706,7 +777,7 @@ namespace UnitySkills
                 rsppu?.SetValue(settings, referenceSpritePixelsPerUnit.Value);
             }
 
-            // --- Dynamic Atlas Settings (struct: read → modify → write back) ---
+            // --- Dynamic Atlas Settings (struct: read -> modify -> write back) ---
             if (dynamicAtlasMinSize.HasValue || dynamicAtlasMaxSize.HasValue ||
                 dynamicAtlasMaxSubTextureSize.HasValue || !string.IsNullOrEmpty(dynamicAtlasFilters))
             {
@@ -735,9 +806,11 @@ namespace UnitySkills
             if (!string.IsNullOrEmpty(bindingLogLevel) && System.Enum.TryParse<UnityEngine.UIElements.BindingLogLevel>(bindingLogLevel, true, out var parsedLogLevel))
                 settings.bindingLogLevel = parsedLogLevel;
             if (vertexBudget.HasValue)     settings.vertexBudget = (uint)vertexBudget.Value;
+#if UNITY_6000_3_OR_NEWER
             if (textureSlotCount.HasValue) settings.textureSlotCount = (TextureSlotCount)textureSlotCount.Value;
+#endif
 
-            // renderMode, colliderUpdateMode, colliderIsTrigger are internal — use SerializedObject
+            // renderMode, colliderUpdateMode, and colliderIsTrigger are internal; update them via SerializedObject.
             if (!string.IsNullOrEmpty(renderMode) || !string.IsNullOrEmpty(colliderUpdateMode) || colliderIsTrigger.HasValue)
             {
                 var so = new SerializedObject(settings);
@@ -791,7 +864,7 @@ namespace UnitySkills
 
             var childElements = element.Elements().ToArray();
             if (currentDepth >= maxDepth && childElements.Length > 0)
-                return new { tag, attributes = attrs, children = new[] { new { note = $"[{childElements.Length} children — truncated at depth {maxDepth}]" } } };
+                return new { tag, attributes = attrs, children = new[] { new { note = $"[{childElements.Length} children; truncated at depth {maxDepth}]" } } };
 
             var children = childElements
                 .Select(c => ParseXmlNode(c, currentDepth + 1, maxDepth))
@@ -811,6 +884,10 @@ namespace UnitySkills
                 case "settings":ussContent = SettingsUss(uiName);  uxmlContent = SettingsUxml(uiName, ussFilePath);  break;
                 case "inventory":ussContent = InventoryUss(uiName);uxmlContent = InventoryUxml(uiName, ussFilePath); break;
                 case "list":    ussContent = ListUss(uiName);      uxmlContent = ListUxml(uiName, ussFilePath);      break;
+                case "tab-view":ussContent = TabViewUss(uiName);   uxmlContent = TabViewUxml(uiName, ussFilePath);   break;
+                case "toolbar": ussContent = ToolbarUss(uiName);   uxmlContent = ToolbarUxml(uiName, ussFilePath);   break;
+                case "card":    ussContent = CardUss(uiName);      uxmlContent = CardUxml(uiName, ussFilePath);      break;
+                case "notification": ussContent = NotificationUss(uiName); uxmlContent = NotificationUxml(uiName, ussFilePath); break;
                 default:        ussContent = DefaultUss(uiName);   uxmlContent = DefaultUxml(ussFilePath);           break;
             }
         }
@@ -1004,5 +1081,638 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     </engine:VisualElement>
 </engine:UXML>
 ";
+
+        // --- Tab View ---
+        private static string TabViewUss(string n) =>
+$@"/* {n} Tab View */
+.tab-root {{ width: 100%; height: 100%; background-color: #1E1E1E; }}
+.tab-bar {{ flex-direction: row; background-color: #2D2D2D; border-bottom-width: 2px; border-color: #444; }}
+.tab {{ padding: 8px 16px; color: #999; font-size: 14px; border-bottom-width: 2px; border-color: transparent; }}
+.tab:hover {{ color: #CCC; }}
+.tab--active {{ color: #FFF; border-color: #4A90D9; }}
+.tab-content {{ flex-grow: 1; padding: 16px; display: none; }}
+.tab-content--active {{ display: flex; }}
+";
+
+        private static string TabViewUxml(string n, string uss) =>
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<engine:UXML xmlns:engine=""UnityEngine.UIElements"">
+    <Style src=""{uss}"" />
+    <engine:VisualElement class=""tab-root"">
+        <engine:VisualElement class=""tab-bar"">
+            <engine:Label class=""tab tab--active"" text=""Tab 1"" name=""tab-1"" />
+            <engine:Label class=""tab"" text=""Tab 2"" name=""tab-2"" />
+            <engine:Label class=""tab"" text=""Tab 3"" name=""tab-3"" />
+        </engine:VisualElement>
+        <engine:VisualElement class=""tab-content tab-content--active"" name=""content-1"">
+            <engine:Label text=""Tab 1 content"" />
+        </engine:VisualElement>
+        <engine:VisualElement class=""tab-content"" name=""content-2"">
+            <engine:Label text=""Tab 2 content"" />
+        </engine:VisualElement>
+        <engine:VisualElement class=""tab-content"" name=""content-3"">
+            <engine:Label text=""Tab 3 content"" />
+        </engine:VisualElement>
+    </engine:VisualElement>
+</engine:UXML>
+";
+
+        // --- Toolbar ---
+        private static string ToolbarUss(string n) =>
+$@"/* {n} Toolbar */
+.toolbar-root {{ width: 100%; flex-direction: row; background-color: #333; height: 40px; align-items: center; padding: 0 8px; border-bottom-width: 1px; border-color: #555; }}
+.toolbar-btn {{ height: 28px; padding: 0 12px; margin-right: 4px; background-color: #444; border-width: 0; border-radius: 4px; color: #DDD; font-size: 12px; }}
+.toolbar-btn:hover {{ background-color: #555; }}
+.toolbar-separator {{ width: 1px; height: 24px; background-color: #555; margin: 0 8px; }}
+.toolbar-spacer {{ flex-grow: 1; }}
+.toolbar-label {{ color: #AAA; font-size: 12px; margin-right: 8px; }}
+";
+
+        private static string ToolbarUxml(string n, string uss) =>
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<engine:UXML xmlns:engine=""UnityEngine.UIElements"">
+    <Style src=""{uss}"" />
+    <engine:VisualElement class=""toolbar-root"" name=""{n}"">
+        <engine:Button class=""toolbar-btn"" text=""File"" name=""btn-file"" />
+        <engine:Button class=""toolbar-btn"" text=""Edit"" name=""btn-edit"" />
+        <engine:Button class=""toolbar-btn"" text=""View"" name=""btn-view"" />
+        <engine:VisualElement class=""toolbar-separator"" />
+        <engine:Button class=""toolbar-btn"" text=""Build"" name=""btn-build"" />
+        <engine:VisualElement class=""toolbar-spacer"" />
+        <engine:Label class=""toolbar-label"" text=""Ready"" name=""status-label"" />
+    </engine:VisualElement>
+</engine:UXML>
+";
+
+        // --- Card ---
+        private static string CardUss(string n) =>
+$@"/* {n} Card */
+.card-container {{ flex-direction: row; flex-wrap: wrap; padding: 16px; }}
+.card {{ width: 240px; margin: 8px; background-color: #2A2A2A; border-radius: 8px; border-width: 1px; border-color: #444; overflow: hidden; }}
+.card:hover {{ border-color: #4A90D9; }}
+.card-image {{ width: 100%; height: 140px; background-color: #3A3A3A; }}
+.card-body {{ padding: 12px; }}
+.card-title {{ font-size: 16px; color: #E0E0E0; -unity-font-style: bold; margin-bottom: 6px; }}
+.card-desc {{ font-size: 12px; color: #999; white-space: normal; }}
+.card-footer {{ flex-direction: row; padding: 8px 12px; border-top-width: 1px; border-color: #444; }}
+.card-tag {{ padding: 2px 8px; background-color: #3A3A5A; border-radius: 10px; color: #8A8ACA; font-size: 10px; margin-right: 4px; }}
+";
+
+        private static string CardUxml(string n, string uss) =>
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<engine:UXML xmlns:engine=""UnityEngine.UIElements"">
+    <Style src=""{uss}"" />
+    <engine:VisualElement class=""card-container"">
+        <engine:VisualElement class=""card"">
+            <engine:VisualElement class=""card-image"" />
+            <engine:VisualElement class=""card-body"">
+                <engine:Label class=""card-title"" text=""Card Title"" />
+                <engine:Label class=""card-desc"" text=""A short description of this card item."" />
+            </engine:VisualElement>
+            <engine:VisualElement class=""card-footer"">
+                <engine:Label class=""card-tag"" text=""Tag 1"" />
+                <engine:Label class=""card-tag"" text=""Tag 2"" />
+            </engine:VisualElement>
+        </engine:VisualElement>
+    </engine:VisualElement>
+</engine:UXML>
+";
+
+        // --- Notification ---
+        private static string NotificationUss(string n) =>
+$@"/* {n} Notification */
+.notif-container {{ position: absolute; top: 16px; right: 16px; width: 320px; }}
+.notif {{ padding: 12px 16px; margin-bottom: 8px; border-radius: 6px; border-left-width: 4px; flex-direction: row; align-items: center; }}
+.notif--info {{ background-color: rgba(74,144,217,0.15); border-color: #4A90D9; }}
+.notif--success {{ background-color: rgba(76,175,80,0.15); border-color: #4CAF50; }}
+.notif--warning {{ background-color: rgba(255,152,0,0.15); border-color: #FF9800; }}
+.notif--error {{ background-color: rgba(244,67,54,0.15); border-color: #F44336; }}
+.notif-text {{ flex-grow: 1; color: #E0E0E0; font-size: 13px; white-space: normal; }}
+.notif-close {{ width: 20px; height: 20px; color: #888; font-size: 16px; -unity-text-align: middle-center; }}
+.notif-close:hover {{ color: #FFF; }}
+";
+
+        private static string NotificationUxml(string n, string uss) =>
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<engine:UXML xmlns:engine=""UnityEngine.UIElements"">
+    <Style src=""{uss}"" />
+    <engine:VisualElement class=""notif-container"" name=""{n}"">
+        <engine:VisualElement class=""notif notif--info"">
+            <engine:Label class=""notif-text"" text=""Information message."" />
+            <engine:Label class=""notif-close"" text=""x"" />
+        </engine:VisualElement>
+        <engine:VisualElement class=""notif notif--success"">
+            <engine:Label class=""notif-text"" text=""Operation completed!"" />
+            <engine:Label class=""notif-close"" text=""x"" />
+        </engine:VisualElement>
+        <engine:VisualElement class=""notif notif--warning"">
+            <engine:Label class=""notif-text"" text=""Something needs attention."" />
+            <engine:Label class=""notif-close"" text=""x"" />
+        </engine:VisualElement>
+    </engine:VisualElement>
+</engine:UXML>
+";
+
+        // ============================ UXML ELEMENT OPERATIONS ============================
+
+        private static readonly XNamespace EngineNs = "UnityEngine.UIElements";
+
+        [UnitySkill("uitk_add_element", "Add an element to a UXML file (Label/Button/Toggle/Slider/TextField/VisualElement/etc.)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Modify,
+            Tags = new[] { "add", "uxml", "element", "visual-element" },
+            Outputs = new[] { "path", "elementType", "elementName", "parentName" },
+            RequiresInput = new[] { "filePath" },
+            TracksWorkflow = true)]
+        public static object UitkAddElement(
+            string filePath, string elementType, string parentName = null,
+            string elementName = null, string text = null,
+            string classes = null, string style = null,
+            string bindingPath = null)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(elementType, "elementType") is object typeErr) return typeErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var xdoc = XDocument.Parse(content);
+
+            var parent = string.IsNullOrEmpty(parentName)
+                ? xdoc.Root
+                : FindXmlElementByName(xdoc.Root, parentName);
+
+            if (parent == null)
+                return new { error = $"Parent element with name '{parentName}' not found" };
+
+            var newElement = new XElement(EngineNs + elementType);
+            if (!string.IsNullOrEmpty(elementName))
+                newElement.SetAttributeValue("name", elementName);
+            if (!string.IsNullOrEmpty(text))
+                newElement.SetAttributeValue("text", text);
+            if (!string.IsNullOrEmpty(classes))
+                newElement.SetAttributeValue("class", classes);
+            if (!string.IsNullOrEmpty(style))
+                newElement.SetAttributeValue("style", style);
+            if (!string.IsNullOrEmpty(bindingPath))
+                newElement.SetAttributeValue("binding-path", bindingPath);
+
+            parent.Add(newElement);
+            File.WriteAllText(filePath, xdoc.ToString(), Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, elementType, elementName, parentName = parentName ?? "(root)" };
+        }
+
+        [UnitySkill("uitk_remove_element", "Remove an element from a UXML file by name",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Delete,
+            Tags = new[] { "remove", "uxml", "element", "delete" },
+            Outputs = new[] { "path", "removedElement" },
+            RequiresInput = new[] { "filePath", "elementName" },
+            TracksWorkflow = true)]
+        public static object UitkRemoveElement(string filePath, string elementName)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(elementName, "elementName") is object nameErr) return nameErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var xdoc = XDocument.Parse(content);
+
+            var target = FindXmlElementByName(xdoc.Root, elementName);
+            if (target == null)
+                return new { error = $"Element with name '{elementName}' not found" };
+
+            target.Remove();
+            File.WriteAllText(filePath, xdoc.ToString(), Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, removedElement = elementName };
+        }
+
+        [UnitySkill("uitk_modify_element", "Modify attributes of a UXML element by name",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Modify,
+            Tags = new[] { "modify", "uxml", "element", "attribute" },
+            Outputs = new[] { "path", "element" },
+            RequiresInput = new[] { "filePath", "elementName" },
+            TracksWorkflow = true)]
+        public static object UitkModifyElement(
+            string filePath, string elementName,
+            string text = null, string classes = null, string style = null,
+            string newName = null, string bindingPath = null,
+            string setAttribute = null, string setAttributeValue = null)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(elementName, "elementName") is object nameErr) return nameErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var xdoc = XDocument.Parse(content);
+
+            var target = FindXmlElementByName(xdoc.Root, elementName);
+            if (target == null)
+                return new { error = $"Element with name '{elementName}' not found" };
+
+            if (text != null) target.SetAttributeValue("text", text);
+            if (classes != null) target.SetAttributeValue("class", classes);
+            if (style != null) target.SetAttributeValue("style", style);
+            if (newName != null) target.SetAttributeValue("name", newName);
+            if (bindingPath != null) target.SetAttributeValue("binding-path", bindingPath);
+            if (!string.IsNullOrEmpty(setAttribute))
+                target.SetAttributeValue(setAttribute, setAttributeValue ?? "");
+
+            File.WriteAllText(filePath, xdoc.ToString(), Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, element = newName ?? elementName };
+        }
+
+        [UnitySkill("uitk_clone_element", "Clone (duplicate) an element in a UXML file by name",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "clone", "uxml", "duplicate", "element" },
+            Outputs = new[] { "path", "clonedFrom", "newName" },
+            RequiresInput = new[] { "filePath", "elementName" },
+            TracksWorkflow = true)]
+        public static object UitkCloneElement(string filePath, string elementName, string newName = null)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(elementName, "elementName") is object nameErr) return nameErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var xdoc = XDocument.Parse(content);
+
+            var target = FindXmlElementByName(xdoc.Root, elementName);
+            if (target == null)
+                return new { error = $"Element with name '{elementName}' not found" };
+
+            var clone = new XElement(target);
+            if (!string.IsNullOrEmpty(newName))
+                clone.SetAttributeValue("name", newName);
+
+            target.AddAfterSelf(clone);
+            File.WriteAllText(filePath, xdoc.ToString(), Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, clonedFrom = elementName, newName = newName ?? "(copy)" };
+        }
+
+        // ============================ USS OPERATIONS ============================
+
+        [UnitySkill("uitk_add_uss_rule", "Add or update a USS rule in a stylesheet file",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "uss", "rule", "selector", "style" },
+            Outputs = new[] { "path", "selector", "action" },
+            RequiresInput = new[] { "filePath" },
+            TracksWorkflow = true)]
+        public static object UitkAddUssRule(string filePath, string selector, string properties)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(selector, "selector") is object selErr) return selErr;
+            if (Validate.Required(properties, "properties") is object propErr) return propErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var normalizedSelector = selector.Trim();
+
+            // Try to find existing rule and replace it
+            var pattern = System.Text.RegularExpressions.Regex.Escape(normalizedSelector) + @"\s*\{[^}]*\}";
+            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.None, System.TimeSpan.FromSeconds(1));
+            var newRule = $"{normalizedSelector} {{\n{FormatUssProperties(properties)}\n}}";
+
+            string result;
+            bool existed = regex.IsMatch(content);
+            if (existed)
+            {
+                result = regex.Replace(content, newRule, 1);
+            }
+            else
+            {
+                result = content.TrimEnd() + "\n\n" + newRule + "\n";
+            }
+
+            File.WriteAllText(filePath, result, Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, selector = normalizedSelector, action = existed ? "updated" : "added" };
+        }
+
+        [UnitySkill("uitk_remove_uss_rule", "Remove a USS rule by selector from a stylesheet file",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Delete,
+            Tags = new[] { "uss", "rule", "remove", "selector" },
+            Outputs = new[] { "path", "removedSelector" },
+            RequiresInput = new[] { "filePath", "selector" },
+            TracksWorkflow = true)]
+        public static object UitkRemoveUssRule(string filePath, string selector)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (Validate.Required(selector, "selector") is object selErr) return selErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var existing = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(filePath);
+            if (existing != null) WorkflowManager.SnapshotObject(existing);
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var normalizedSelector = selector.Trim();
+
+            var pattern = @"\n?" + System.Text.RegularExpressions.Regex.Escape(normalizedSelector) + @"\s*\{[^}]*\}\n?";
+            var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.None, System.TimeSpan.FromSeconds(1));
+
+            if (!regex.IsMatch(content))
+                return new { error = $"Selector '{normalizedSelector}' not found in {filePath}" };
+
+            var result = regex.Replace(content, "\n", 1);
+            File.WriteAllText(filePath, result, Utf8NoBom);
+            AssetDatabase.ImportAsset(filePath);
+
+            return new { success = true, path = filePath, removedSelector = normalizedSelector };
+        }
+
+        [UnitySkill("uitk_list_uss_variables", "Extract all CSS custom properties (--var-name) from a USS file",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "uss", "variables", "custom-properties", "css" },
+            Outputs = new[] { "path", "definedCount", "variables", "referencedVariables" },
+            RequiresInput = new[] { "filePath" },
+            ReadOnly = true)]
+        public static object UitkListUssVariables(string filePath)
+        {
+            if (Validate.SafePath(filePath, "filePath") is object pathErr) return pathErr;
+            if (!File.Exists(filePath))
+                return new { error = $"File not found: {filePath}" };
+
+            var content = File.ReadAllText(filePath, System.Text.Encoding.UTF8);
+            var regex = new System.Text.RegularExpressions.Regex(
+                @"(--[\w-]+)\s*:\s*([^;]+);",
+                System.Text.RegularExpressions.RegexOptions.None,
+                System.TimeSpan.FromSeconds(1));
+
+            var variables = new System.Collections.Generic.List<object>();
+            var seen = new System.Collections.Generic.HashSet<string>();
+            foreach (System.Text.RegularExpressions.Match match in regex.Matches(content))
+            {
+                var varName = match.Groups[1].Value.Trim();
+                var varValue = match.Groups[2].Value.Trim();
+                if (seen.Add(varName))
+                    variables.Add(new { name = varName, value = varValue });
+            }
+
+            // Also find usages of var()
+            var usageRegex = new System.Text.RegularExpressions.Regex(
+                @"var\((--[\w-]+)\)",
+                System.Text.RegularExpressions.RegexOptions.None,
+                System.TimeSpan.FromSeconds(1));
+            var usages = new System.Collections.Generic.HashSet<string>();
+            foreach (System.Text.RegularExpressions.Match match in usageRegex.Matches(content))
+                usages.Add(match.Groups[1].Value.Trim());
+
+            return new
+            {
+                path = filePath,
+                definedCount = variables.Count,
+                variables,
+                referencedVariables = usages.OrderBy(v => v).ToArray()
+            };
+        }
+
+        // ============================ CODE GENERATION ============================
+
+        [UnitySkill("uitk_create_editor_window", "Generate an EditorWindow C# script with UI Toolkit (CreateGUI + UXML/USS binding)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "editor-window", "codegen", "script", "ui-toolkit" },
+            Outputs = new[] { "path", "className", "windowTitle", "menuPath" },
+            TracksWorkflow = true)]
+        public static object UitkCreateEditorWindow(
+            string savePath, string className, string windowTitle = null,
+            string uxmlPath = null, string ussPath = null,
+            string menuPath = null)
+        {
+            if (Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
+            if (Validate.Required(className, "className") is object classErr) return classErr;
+            if (File.Exists(savePath))
+                return new { error = $"File already exists: {savePath}" };
+
+            var dir = Path.GetDirectoryName(savePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            var title = windowTitle ?? className;
+            var menu = menuPath ?? $"Window/{className}";
+
+            var code = $@"using UnityEditor;
+using UnityEngine;
+using UnityEngine.UIElements;
+
+public class {className} : EditorWindow
+{{
+    [MenuItem(""{menu}"")]
+    public static void ShowWindow()
+    {{
+        var wnd = GetWindow<{className}>();
+        wnd.titleContent = new GUIContent(""{title}"");
+        wnd.minSize = new Vector2(400, 300);
+    }}
+
+    public void CreateGUI()
+    {{
+        var root = rootVisualElement;
+{(string.IsNullOrEmpty(ussPath) ? "" : $@"
+        var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(""{ussPath}"");
+        if (styleSheet != null) root.styleSheets.Add(styleSheet);
+")}
+{(string.IsNullOrEmpty(uxmlPath) ? $@"
+        // Build UI in code
+        root.Add(new Label(""{title}""));
+" : $@"
+        var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(""{uxmlPath}"");
+        if (visualTree != null) visualTree.CloneTree(root);
+")}
+        // Query elements and register callbacks
+        // var button = root.Q<Button>(""my-button"");
+        // button?.RegisterCallback<ClickEvent>(OnButtonClicked);
+    }}
+}}
+";
+
+            File.WriteAllText(savePath, code, Utf8NoBom);
+            AssetDatabase.ImportAsset(savePath);
+
+            var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(savePath);
+            if (asset != null) WorkflowManager.SnapshotObject(asset, SnapshotType.Created);
+
+            return new { success = true, path = savePath, className, windowTitle = title, menuPath = menu };
+        }
+
+        [UnitySkill("uitk_create_runtime_ui", "Generate a runtime MonoBehaviour script for UI Toolkit (UIDocument query & binding)",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Create,
+            Tags = new[] { "runtime", "codegen", "monobehaviour", "ui-document" },
+            Outputs = new[] { "path", "className" },
+            TracksWorkflow = true)]
+        public static object UitkCreateRuntimeUi(
+            string savePath, string className,
+            string elementQueries = null)
+        {
+            if (Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
+            if (Validate.Required(className, "className") is object classErr) return classErr;
+            if (File.Exists(savePath))
+                return new { error = $"File already exists: {savePath}" };
+
+            var dir = Path.GetDirectoryName(savePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            // Parse element queries: "Button:my-button,Label:score-label"
+            var queryLines = new System.Text.StringBuilder();
+            var fields = new System.Text.StringBuilder();
+            if (!string.IsNullOrEmpty(elementQueries))
+            {
+                foreach (var q in elementQueries.Split(','))
+                {
+                    var parts = q.Trim().Split(':');
+                    if (parts.Length != 2) continue;
+                    var elType = parts[0].Trim();
+                    var elName = parts[1].Trim();
+                    var fieldName = "m_" + elName.Replace("-", "").Replace("_", "");
+                    fields.AppendLine($"    private {elType} {fieldName};");
+                    queryLines.AppendLine($"        {fieldName} = root.Q<{elType}>(\"{elName}\");");
+                }
+            }
+
+            var code = $@"using UnityEngine;
+using UnityEngine.UIElements;
+
+[RequireComponent(typeof(UIDocument))]
+public class {className} : MonoBehaviour
+{{
+{fields}
+    private void OnEnable()
+    {{
+        var uiDocument = GetComponent<UIDocument>();
+        var root = uiDocument.rootVisualElement;
+
+{queryLines}
+        // Register callbacks
+        // m_myButton?.RegisterCallback<ClickEvent>(OnButtonClicked);
+    }}
+
+    private void OnDisable()
+    {{
+        // Unregister callbacks to prevent memory leaks
+        // m_myButton?.UnregisterCallback<ClickEvent>(OnButtonClicked);
+    }}
+}}
+";
+
+            File.WriteAllText(savePath, code, Utf8NoBom);
+            AssetDatabase.ImportAsset(savePath);
+
+            var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(savePath);
+            if (asset != null) WorkflowManager.SnapshotObject(asset, SnapshotType.Created);
+
+            return new { success = true, path = savePath, className };
+        }
+
+        // ============================ SCENE INSPECTION ============================
+
+        [UnitySkill("uitk_inspect_document", "Inspect the live VisualElement hierarchy of a UIDocument in the scene",
+            Category = SkillCategory.UIToolkit, Operation = SkillOperation.Query,
+            Tags = new[] { "inspect", "ui-document", "hierarchy", "visual-element" },
+            Outputs = new[] { "gameObject", "instanceId", "hierarchy" },
+            RequiresInput = new[] { "gameObject" },
+            ReadOnly = true)]
+        public static object UitkInspectDocument(
+            string name = null, int instanceId = 0, string path = null,
+            int depth = 5)
+        {
+            var go = GameObjectFinder.Find(name, instanceId, path);
+            if (go == null)
+                return new { error = $"GameObject not found: {name ?? path}" };
+
+            var doc = go.GetComponent<UIDocument>();
+            if (doc == null)
+                return new { error = $"No UIDocument component on '{go.name}'" };
+
+            var root = doc.rootVisualElement;
+            if (root == null)
+                return new { error = "UIDocument has no rootVisualElement (document may not be active)" };
+
+            var hierarchy = InspectVisualElement(root, 0, depth);
+            return new
+            {
+                gameObject = go.name,
+                instanceId = go.GetInstanceID(),
+                hierarchy
+            };
+        }
+
+        // ============================ PRIVATE UITK HELPERS ============================
+
+        private static XElement FindXmlElementByName(XElement root, string elementName)
+        {
+            if (root == null) return null;
+            var nameAttr = root.Attribute("name");
+            if (nameAttr != null && nameAttr.Value == elementName)
+                return root;
+            foreach (var child in root.Elements())
+            {
+                var found = FindXmlElementByName(child, elementName);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static string FormatUssProperties(string properties)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var prop in properties.Split(';'))
+            {
+                var trimmed = prop.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                    sb.AppendLine($"    {trimmed};");
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        private static object InspectVisualElement(UnityEngine.UIElements.VisualElement element, int currentDepth, int maxDepth)
+        {
+            var typeName = element.GetType().Name;
+            var elName = element.name;
+            var classes = element.GetClasses().ToArray();
+            var childCount = element.childCount;
+
+            if (currentDepth >= maxDepth && childCount > 0)
+            {
+                return new
+                {
+                    type = typeName, name = elName,
+                    classes, childCount,
+                    note = $"[{childCount} children; truncated at depth {maxDepth}]"
+                };
+            }
+
+            var children = new System.Collections.Generic.List<object>();
+            for (int i = 0; i < element.childCount; i++)
+                children.Add(InspectVisualElement(element[i], currentDepth + 1, maxDepth));
+
+            return new { type = typeName, name = elName, classes, children };
+        }
     }
 }

@@ -14,6 +14,7 @@ namespace UnitySkills
     /// </summary>
     public static class PackageManagerHelper
     {
+        private const string PrefKeyAutoInstallPackagesOnStartup = "UnitySkills_AutoInstallPackagesOnStartup";
         public const string CinemachinePackageId = "com.unity.cinemachine";
         public const string SplinesPackageId = "com.unity.splines";
         public const string Cinemachine2Version = "2.10.5";
@@ -26,39 +27,53 @@ namespace UnitySkills
         private static RemoveRequest _removeRequest;
         private static Dictionary<string, PkgInfo> _installedPackages;
         private static bool _isRefreshing;
-        private static Action<bool, string> _pendingCallback;
+        private static Action<bool> _pendingListCallbacks;
+        private static Action<bool, string> _pendingAddCallback;
+        private static Action<bool, string> _pendingRemoveCallback;
 
         public static bool IsRefreshing => _isRefreshing;
         public static Dictionary<string, PkgInfo> InstalledPackages => _installedPackages;
+        public static bool AutoInstallPackagesOnStartup
+        {
+            get => EditorPrefs.GetBool(PrefKeyAutoInstallPackagesOnStartup, false);
+            set => EditorPrefs.SetBool(PrefKeyAutoInstallPackagesOnStartup, value);
+        }
 
         /// <summary>
         /// 刷新已安装包列表
         /// </summary>
         public static void RefreshPackageList(Action<bool> callback = null)
         {
+            if (callback != null)
+                _pendingListCallbacks += callback;
+
             if (_isRefreshing) return;
+
             _isRefreshing = true;
             _listRequest = Client.List(true);
-            EditorApplication.update += () => OnListProgress(callback);
+            EditorApplication.update -= OnListProgress;
+            EditorApplication.update += OnListProgress;
         }
 
-        private static void OnListProgress(Action<bool> callback)
+        private static void OnListProgress()
         {
             if (!_listRequest.IsCompleted) return;
-            EditorApplication.update -= () => OnListProgress(callback);
+            EditorApplication.update -= OnListProgress;
 
             _isRefreshing = false;
+            var callbacks = _pendingListCallbacks;
+            _pendingListCallbacks = null;
             if (_listRequest.Status == StatusCode.Success)
             {
                 _installedPackages = new Dictionary<string, PkgInfo>();
                 foreach (var pkg in _listRequest.Result)
                     _installedPackages[pkg.name] = pkg;
-                callback?.Invoke(true);
+                callbacks?.Invoke(true);
             }
             else
             {
                 Debug.LogError($"[PackageManager] List failed: {_listRequest.Error?.message}");
-                callback?.Invoke(false);
+                callbacks?.Invoke(false);
             }
         }
 
@@ -85,7 +100,8 @@ namespace UnitySkills
         /// </summary>
         public static void InstallPackage(string packageId, string version, Action<bool, string> callback)
         {
-            if (_addRequest != null && !_addRequest.IsCompleted)
+            if ((_addRequest != null && !_addRequest.IsCompleted) ||
+                (_removeRequest != null && !_removeRequest.IsCompleted))
             {
                 callback?.Invoke(false, "Another install operation is in progress");
                 return;
@@ -93,7 +109,8 @@ namespace UnitySkills
 
             var identifier = string.IsNullOrEmpty(version) ? packageId : $"{packageId}@{version}";
             _addRequest = Client.Add(identifier);
-            _pendingCallback = callback;
+            _pendingAddCallback = callback;
+            EditorApplication.update -= OnAddProgress;
             EditorApplication.update += OnAddProgress;
         }
 
@@ -102,8 +119,8 @@ namespace UnitySkills
             if (!_addRequest.IsCompleted) return;
             EditorApplication.update -= OnAddProgress;
 
-            var cb = _pendingCallback;
-            _pendingCallback = null;
+            var cb = _pendingAddCallback;
+            _pendingAddCallback = null;
 
             if (_addRequest.Status == StatusCode.Success)
             {
@@ -121,14 +138,16 @@ namespace UnitySkills
         /// </summary>
         public static void RemovePackage(string packageId, Action<bool, string> callback)
         {
-            if (_removeRequest != null && !_removeRequest.IsCompleted)
+            if ((_removeRequest != null && !_removeRequest.IsCompleted) ||
+                (_addRequest != null && !_addRequest.IsCompleted))
             {
                 callback?.Invoke(false, "Another remove operation is in progress");
                 return;
             }
 
             _removeRequest = Client.Remove(packageId);
-            _pendingCallback = callback;
+            _pendingRemoveCallback = callback;
+            EditorApplication.update -= OnRemoveProgress;
             EditorApplication.update += OnRemoveProgress;
         }
 
@@ -137,8 +156,8 @@ namespace UnitySkills
             if (!_removeRequest.IsCompleted) return;
             EditorApplication.update -= OnRemoveProgress;
 
-            var cb = _pendingCallback;
-            _pendingCallback = null;
+            var cb = _pendingRemoveCallback;
+            _pendingRemoveCallback = null;
 
             if (_removeRequest.Status == StatusCode.Success)
             {
@@ -224,7 +243,8 @@ namespace UnitySkills
             {
                 RefreshPackageList(success =>
                 {
-                    if (success) AutoInstallCinemachineIfNeeded();
+                    if (success && AutoInstallPackagesOnStartup)
+                        AutoInstallCinemachineIfNeeded();
                 });
             };
         }

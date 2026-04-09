@@ -11,9 +11,16 @@ namespace UnitySkills
     /// </summary>
     public static class AnimatorSkills
     {
-        [UnitySkill("animator_create_controller", "Create a new Animator Controller")]
+        [UnitySkill("animator_create_controller", "Create a new Animator Controller",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Create,
+            Tags = new[] { "animator", "controller", "create", "animation" },
+            Outputs = new[] { "success", "name", "path" })]
         public static object AnimatorCreateController(string name, string folder = "Assets/Animations")
         {
+            if (Validate.Required(name, "name") is object nameErr) return nameErr;
+            if (name.Contains("/") || name.Contains("\\") || name.Contains(".."))
+                return new { error = "name must not contain path separators" };
+
             var folderErr = Validate.SafePath(folder, "folder");
             if (folderErr != null) return folderErr;
 
@@ -31,7 +38,11 @@ namespace UnitySkills
             return new { success = true, name, path };
         }
 
-        [UnitySkill("animator_add_parameter", "Add a parameter to an Animator Controller")]
+        [UnitySkill("animator_add_parameter", "Add a parameter to an Animator Controller",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Modify,
+            Tags = new[] { "animator", "parameter", "add", "controller" },
+            Outputs = new[] { "success", "controller", "parameter", "type" },
+            RequiresInput = new[] { "animatorController" })]
         public static object AnimatorAddParameter(string controllerPath, string paramName, string paramType = "float", float defaultFloat = 0, int defaultInt = 0, bool defaultBool = false)
         {
             var pathErr = Validate.SafePath(controllerPath, "controllerPath");
@@ -63,22 +74,23 @@ namespace UnitySkills
             WorkflowManager.SnapshotObject(controller);
             controller.AddParameter(paramName, type);
 
-            // Set default value
+            // Set default value — use index to modify struct in-place (value type copy bug fix)
             var parameters = controller.parameters;
-            var param = parameters.FirstOrDefault(p => p.name == paramName);
-            if (param != null)
+            int idx = System.Array.FindIndex(parameters, p => p.name == paramName);
+            if (idx >= 0)
             {
                 switch (type)
                 {
                     case AnimatorControllerParameterType.Float:
-                        param.defaultFloat = defaultFloat;
+                        parameters[idx].defaultFloat = defaultFloat;
                         break;
                     case AnimatorControllerParameterType.Int:
-                        param.defaultInt = defaultInt;
+                        parameters[idx].defaultInt = defaultInt;
                         break;
                     case AnimatorControllerParameterType.Bool:
-                        param.defaultBool = defaultBool;
+                        parameters[idx].defaultBool = defaultBool;
                         break;
+                    default: break;
                 }
                 controller.parameters = parameters;
             }
@@ -89,7 +101,12 @@ namespace UnitySkills
             return new { success = true, controller = controllerPath, parameter = paramName, type = paramType };
         }
 
-        [UnitySkill("animator_get_parameters", "Get all parameters from an Animator Controller")]
+        [UnitySkill("animator_get_parameters", "Get all parameters from an Animator Controller",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Query,
+            Tags = new[] { "animator", "parameter", "list", "controller" },
+            Outputs = new[] { "controller", "parameters" },
+            RequiresInput = new[] { "animatorController" },
+            ReadOnly = true)]
         public static object AnimatorGetParameters(string controllerPath)
         {
             var pathErr = Validate.SafePath(controllerPath, "controllerPath");
@@ -111,7 +128,11 @@ namespace UnitySkills
             return new { controller = controllerPath, parameters };
         }
 
-        [UnitySkill("animator_set_parameter", "Set a parameter value on a GameObject's Animator (supports name/instanceId/path)")]
+        [UnitySkill("animator_set_parameter", "Set a parameter value on a GameObject's Animator (supports name/instanceId/path)",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Modify,
+            Tags = new[] { "animator", "parameter", "set", "value" },
+            Outputs = new[] { "success", "gameObject", "parameter", "value" },
+            RequiresInput = new[] { "gameObject" })]
         public static object AnimatorSetParameter(
             string name = null, int instanceId = 0, string path = null,
             string paramName = null, string paramType = "float",
@@ -148,7 +169,11 @@ namespace UnitySkills
             }
         }
 
-        [UnitySkill("animator_play", "Play an animation state on a GameObject (supports name/instanceId/path)")]
+        [UnitySkill("animator_play", "Play an animation state on a GameObject (supports name/instanceId/path)",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Execute,
+            Tags = new[] { "animator", "play", "state", "animation" },
+            Outputs = new[] { "success", "gameObject", "state", "layer" },
+            RequiresInput = new[] { "gameObject" })]
         public static object AnimatorPlay(string name = null, int instanceId = 0, string path = null, string stateName = null, int layer = 0, float normalizedTime = 0)
         {
             if (Validate.Required(stateName, "stateName") is object err1) return err1;
@@ -165,7 +190,12 @@ namespace UnitySkills
             return new { success = true, gameObject = go.name, state = stateName, layer };
         }
 
-        [UnitySkill("animator_get_info", "Get Animator component information (supports name/instanceId/path)")]
+        [UnitySkill("animator_get_info", "Get Animator component information (supports name/instanceId/path)",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Query,
+            Tags = new[] { "animator", "info", "inspect", "controller" },
+            Outputs = new[] { "gameObject", "instanceId", "hasController", "controllerPath", "speed", "layerCount", "parameterCount" },
+            RequiresInput = new[] { "gameObject" },
+            ReadOnly = true)]
         public static object AnimatorGetInfo(string name = null, int instanceId = 0, string path = null)
         {
             var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
@@ -194,7 +224,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("animator_assign_controller", "Assign an Animator Controller to a GameObject (supports name/instanceId/path)")]
+        [UnitySkill("animator_assign_controller", "Assign an Animator Controller to a GameObject (supports name/instanceId/path)",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Modify,
+            Tags = new[] { "animator", "controller", "assign", "bind" },
+            Outputs = new[] { "success", "gameObject", "controller" },
+            RequiresInput = new[] { "gameObject", "animatorController" })]
         public static object AnimatorAssignController(string name = null, int instanceId = 0, string path = null, string controllerPath = null)
         {
             if (Validate.Required(controllerPath, "controllerPath") is object err2) return err2;
@@ -221,7 +255,12 @@ namespace UnitySkills
             return new { success = true, gameObject = go.name, controller = controllerPath };
         }
 
-        [UnitySkill("animator_list_states", "List all states in an Animator Controller layer")]
+        [UnitySkill("animator_list_states", "List all states in an Animator Controller layer",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Query,
+            Tags = new[] { "animator", "state", "list", "layer" },
+            Outputs = new[] { "controller", "layer", "layerName", "stateCount", "states" },
+            RequiresInput = new[] { "animatorController" },
+            ReadOnly = true)]
         public static object AnimatorListStates(string controllerPath, int layer = 0)
         {
             var pathErr = Validate.SafePath(controllerPath, "controllerPath");
@@ -252,7 +291,12 @@ namespace UnitySkills
                 states
             };
         }
-        [UnitySkill("animator_add_state", "Add a state to an Animator Controller layer")]
+        [UnitySkill("animator_add_state", "Add a state to an Animator Controller layer",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "animator", "state", "add", "layer" },
+            Outputs = new[] { "success", "controller", "stateName", "layer" },
+            RequiresInput = new[] { "animatorController" },
+            TracksWorkflow = true)]
         public static object AnimatorAddState(string controllerPath, string stateName, string clipPath = null, int layer = 0)
         {
             var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);
@@ -270,7 +314,12 @@ namespace UnitySkills
             return new { success = true, controller = controllerPath, stateName, layer };
         }
 
-        [UnitySkill("animator_add_transition", "Add a transition between two states in an Animator Controller")]
+        [UnitySkill("animator_add_transition", "Add a transition between two states in an Animator Controller",
+            Category = SkillCategory.Animator, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "animator", "transition", "state", "flow" },
+            Outputs = new[] { "success", "from", "to", "layer", "hasExitTime", "duration" },
+            RequiresInput = new[] { "animatorController" },
+            TracksWorkflow = true)]
         public static object AnimatorAddTransition(string controllerPath, string fromState, string toState, int layer = 0, bool hasExitTime = true, float duration = 0.25f)
         {
             var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(controllerPath);

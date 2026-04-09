@@ -4,6 +4,7 @@ using UnityEditor;
 using System.Linq;
 using System.Reflection;
 using System;
+using System.Collections.Generic;
 
 namespace UnitySkills
 {
@@ -16,6 +17,7 @@ namespace UnitySkills
         // Cache TMP types for performance
         private static Type _tmpTextType;
         private static Type _tmpInputFieldType;
+        private static Type _tmpDropdownType;
         private static bool _tmpChecked = false;
         private static bool _tmpAvailable = false;
 
@@ -29,6 +31,7 @@ namespace UnitySkills
                 _tmpChecked = true;
                 _tmpTextType = Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
                 _tmpInputFieldType = Type.GetType("TMPro.TMP_InputField, Unity.TextMeshPro");
+                _tmpDropdownType = Type.GetType("TMPro.TMP_Dropdown, Unity.TextMeshPro");
                 _tmpAvailable = _tmpTextType != null;
             }
             return _tmpAvailable;
@@ -97,7 +100,11 @@ namespace UnitySkills
             }
             return false;
         }
-        [UnitySkill("ui_create_canvas", "Create a new Canvas")]
+        [UnitySkill("ui_create_canvas", "Create a new Canvas",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "canvas", "ugui", "overlay", "render-mode" },
+            Outputs = new[] { "name", "instanceId", "renderMode" },
+            TracksWorkflow = true)]
         public static object UICreateCanvas(string name = "Canvas", string renderMode = "ScreenSpaceOverlay")
         {
             var go = new GameObject(name);
@@ -133,7 +140,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("ui_create_panel", "Create a Panel UI element")]
+        [UnitySkill("ui_create_panel", "Create a Panel UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "panel", "ugui", "container", "background" },
+            Outputs = new[] { "name", "instanceId", "parent" },
+            TracksWorkflow = true)]
         public static object UICreatePanel(string name = "Panel", string parent = null, float r = 1, float g = 1, float b = 1, float a = 0.5f)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -157,7 +168,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name };
         }
 
-        [UnitySkill("ui_create_button", "Create a Button UI element")]
+        [UnitySkill("ui_create_button", "Create a Button UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "button", "ugui", "interactive", "click" },
+            Outputs = new[] { "name", "instanceId", "parent", "text" },
+            TracksWorkflow = true)]
         public static object UICreateButton(string name = "Button", string parent = null, string text = "Button", float width = 160, float height = 30)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -191,7 +206,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, text };
         }
 
-        [UnitySkill("ui_create_text", "Create a Text UI element")]
+        [UnitySkill("ui_create_text", "Create a Text UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "text", "ugui", "label", "tmp" },
+            Outputs = new[] { "name", "instanceId", "parent", "usingTMP" },
+            TracksWorkflow = true)]
         public static object UICreateText(string name = "Text", string parent = null, string text = "New Text", int fontSize = 14, float r = 0, float g = 0, float b = 0)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -212,7 +231,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, usingTMP = IsTMPAvailable() };
         }
 
-        [UnitySkill("ui_create_image", "Create an Image UI element")]
+        [UnitySkill("ui_create_image", "Create an Image UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "image", "ugui", "sprite", "graphic" },
+            Outputs = new[] { "name", "instanceId", "parent" },
+            TracksWorkflow = true)]
         public static object UICreateImage(string name = "Image", string parent = null, string spritePath = null, float width = 100, float height = 100)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -240,7 +263,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name };
         }
 
-        [UnitySkill("ui_create_batch", "Create multiple UI elements (Efficient). items: JSON array of {type, name, parent, text, width, height, ...}")]
+        [UnitySkill("ui_create_batch", "Create multiple UI elements (Efficient). items: JSON array of {type, name, parent, text, width, height, ...}",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "batch", "ugui", "bulk", "multiple" },
+            Outputs = new[] { "totalRequested", "succeeded", "failed", "results" },
+            TracksWorkflow = true)]
         public static object UICreateBatch(string items)
         {
             return BatchExecutor.Execute<BatchUIItem>(items, item =>
@@ -272,6 +299,18 @@ namespace UnitySkills
                     case "toggle":
                         result = UICreateToggle(item.name, item.parent, item.label ?? "Toggle", item.isOn);
                         break;
+                    case "dropdown":
+                        result = UICreateDropdown(item.name, item.parent, item.options, item.width, item.height);
+                        break;
+                    case "scrollview":
+                        result = UICreateScrollview(item.name, item.parent, item.width, item.height);
+                        break;
+                    case "rawimage":
+                        result = UICreateRawImage(item.name, item.parent, item.texturePath, item.width, item.height);
+                        break;
+                    case "scrollbar":
+                        result = UICreateScrollbar(item.name, item.parent, item.direction ?? "BottomToTop", item.value, item.size, (int)item.numberOfSteps);
+                        break;
                     default:
                         throw new System.Exception($"Unknown UI type: {item.type}");
                 }
@@ -300,9 +339,18 @@ namespace UnitySkills
             public float maxValue { get; set; } = 1;
             public float value { get; set; } = 0.5f;
             public string renderMode { get; set; }
+            public string options { get; set; }
+            public string texturePath { get; set; }
+            public string direction { get; set; }
+            public float size { get; set; } = 0.2f;
+            public float numberOfSteps { get; set; } = 0;
         }
 
-        [UnitySkill("ui_create_inputfield", "Create an InputField UI element")]
+        [UnitySkill("ui_create_inputfield", "Create an InputField UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "inputfield", "ugui", "text-input", "tmp" },
+            Outputs = new[] { "name", "instanceId", "parent", "placeholder", "usingTMP" },
+            TracksWorkflow = true)]
         public static object UICreateInputField(string name = "InputField", string parent = null, string placeholder = "Enter text...", float width = 200, float height = 30)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -406,7 +454,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, placeholder, usingTMP = IsTMPAvailable() };
         }
 
-        [UnitySkill("ui_create_slider", "Create a Slider UI element")]
+        [UnitySkill("ui_create_slider", "Create a Slider UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "slider", "ugui", "range", "interactive" },
+            Outputs = new[] { "name", "instanceId", "parent", "minValue", "maxValue", "value" },
+            TracksWorkflow = true)]
         public static object UICreateSlider(string name = "Slider", string parent = null, float minValue = 0, float maxValue = 1, float value = 0.5f, float width = 160, float height = 20)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -475,7 +527,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, minValue, maxValue, value };
         }
 
-        [UnitySkill("ui_create_toggle", "Create a Toggle UI element")]
+        [UnitySkill("ui_create_toggle", "Create a Toggle UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "toggle", "ugui", "checkbox", "interactive" },
+            Outputs = new[] { "name", "instanceId", "parent", "label", "isOn" },
+            TracksWorkflow = true)]
         public static object UICreateToggle(string name = "Toggle", string parent = null, string label = "Toggle", bool isOn = false)
         {
             var parentGo = FindOrCreateCanvas(parent);
@@ -532,7 +588,12 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, label, isOn };
         }
 
-        [UnitySkill("ui_set_text", "Set text content on a UI Text element (supports name/instanceId/path)")]
+        [UnitySkill("ui_set_text", "Set text content on a UI Text element (supports name/instanceId/path)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "text", "ugui", "content", "tmp" },
+            Outputs = new[] { "name", "text", "usingTMP" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object UISetText(string name = null, int instanceId = 0, string path = null, string text = null)
         {
             var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
@@ -564,10 +625,14 @@ namespace UnitySkills
             return new { error = "No Text component found (checked both TMP and Legacy UI)" };
         }
 
-        [UnitySkill("ui_find_all", "Find all UI elements in the scene")]
+        [UnitySkill("ui_find_all", "Find all UI elements in the scene",
+            Category = SkillCategory.UI, Operation = SkillOperation.Query,
+            Tags = new[] { "find", "ugui", "search", "list" },
+            Outputs = new[] { "count", "elements" },
+            ReadOnly = true)]
         public static object UIFindAll(string uiType = null, int limit = 50)
         {
-            var canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
+            var canvases = FindHelper.FindAll<Canvas>();
             var results = new System.Collections.Generic.List<object>();
 
             foreach (var canvas in canvases)
@@ -578,14 +643,14 @@ namespace UnitySkills
                     if (results.Count >= limit) break;
 
                     var type = GetUIType(element.gameObject);
-                    if (!string.IsNullOrEmpty(uiType) && type.ToLower() != uiType.ToLower())
+                    if (!string.IsNullOrEmpty(uiType) && !string.Equals(type, uiType, StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     results.Add(new
                     {
                         name = element.name,
                         instanceId = element.gameObject.GetInstanceID(),
-                        path = GameObjectFinder.GetPath(element.gameObject),
+                        path = GameObjectFinder.GetCachedPath(element.gameObject),
                         uiType = type,
                         active = element.gameObject.activeInHierarchy
                     });
@@ -646,7 +711,12 @@ namespace UnitySkills
         // Advanced UI Layout Skills
         // ==================================================================================
 
-        [UnitySkill("ui_set_anchor", "Set anchor preset for a UI element (TopLeft, TopCenter, TopRight, MiddleLeft, MiddleCenter, MiddleRight, BottomLeft, BottomCenter, BottomRight, StretchHorizontal, StretchVertical, StretchAll)")]
+        [UnitySkill("ui_set_anchor", "Set anchor preset for a UI element (TopLeft, TopCenter, TopRight, MiddleLeft, MiddleCenter, MiddleRight, BottomLeft, BottomCenter, BottomRight, StretchHorizontal, StretchVertical, StretchAll)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "anchor", "ugui", "layout", "rect-transform" },
+            Outputs = new[] { "name", "preset", "anchorMin", "anchorMax" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object UISetAnchor(string name = null, int instanceId = 0, string path = null, string preset = "MiddleCenter", bool setPivot = true)
         {
             var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
@@ -696,7 +766,12 @@ namespace UnitySkills
             return new { success = true, name = go.name, preset, anchorMin = $"({anchorMin.x}, {anchorMin.y})", anchorMax = $"({anchorMax.x}, {anchorMax.y})" };
         }
 
-        [UnitySkill("ui_set_rect", "Set RectTransform size, position, and padding (offsets)")]
+        [UnitySkill("ui_set_rect", "Set RectTransform size, position, and padding (offsets)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "rect-transform", "ugui", "size", "position" },
+            Outputs = new[] { "name", "sizeDelta", "anchoredPosition" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object UISetRect(
             string name = null, int instanceId = 0, string path = null,
             float? width = null, float? height = null,
@@ -749,7 +824,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, sizeDelta = $"({rect.sizeDelta.x}, {rect.sizeDelta.y})", anchoredPosition = $"({rect.anchoredPosition.x}, {rect.anchoredPosition.y})" };
         }
 
-        [UnitySkill("ui_layout_children", "Arrange child UI elements in a layout (Vertical, Horizontal, Grid)")]
+        [UnitySkill("ui_layout_children", "Arrange child UI elements in a layout (Vertical, Horizontal, Grid)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "layout", "ugui", "vertical", "horizontal", "grid" },
+            Outputs = new[] { "parent", "layoutType", "childCount" },
+            RequiresInput = new[] { "gameObject" })]
         public static object UILayoutChildren(
             string name = null, int instanceId = 0, string path = null,
             string layoutType = "Vertical",  // Vertical, Horizontal, Grid
@@ -825,7 +904,11 @@ namespace UnitySkills
             return new { success = true, parent = parentGo.name, layoutType, childCount = rect.childCount };
         }
 
-        [UnitySkill("ui_align_selected", "Align selected UI elements (Left, Center, Right, Top, Middle, Bottom)")]
+        [UnitySkill("ui_align_selected", "Align selected UI elements (Left, Center, Right, Top, Middle, Bottom)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "align", "ugui", "layout", "selection" },
+            Outputs = new[] { "alignment", "count" },
+            RequiresInput = new[] { "selectedGameObjects" })]
         public static object UIAlignSelected(string alignment = "Center")
         {
             var selected = Selection.gameObjects.Where(g => g.GetComponent<RectTransform>() != null).ToList();
@@ -874,7 +957,11 @@ namespace UnitySkills
             return new { success = true, alignment, count = selected.Count };
         }
 
-        [UnitySkill("ui_distribute_selected", "Distribute selected UI elements evenly (Horizontal, Vertical)")]
+        [UnitySkill("ui_distribute_selected", "Distribute selected UI elements evenly (Horizontal, Vertical)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "distribute", "ugui", "layout", "spacing" },
+            Outputs = new[] { "direction", "count" },
+            RequiresInput = new[] { "selectedGameObjects" })]
         public static object UIDistributeSelected(string direction = "Horizontal")
         {
             var selected = Selection.gameObjects
@@ -910,6 +997,613 @@ namespace UnitySkills
             }
 
             return new { success = true, direction, count = selected.Count };
+        }
+
+        // ==================================================================================
+        // New UI Element Creation Skills
+        // ==================================================================================
+
+        [UnitySkill("ui_create_dropdown", "Create a Dropdown UI element with options",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "dropdown", "ugui", "select", "options" },
+            Outputs = new[] { "name", "instanceId", "parent", "optionCount" },
+            TracksWorkflow = true)]
+        public static object UICreateDropdown(string name = "Dropdown", string parent = null, string options = null, float width = 160, float height = 30)
+        {
+            var parentGo = FindOrCreateCanvas(parent);
+            if (parentGo == null)
+                return new { error = "Parent not found and could not create Canvas" };
+
+            var go = new GameObject(name);
+            go.transform.SetParent(parentGo.transform, false);
+
+            var rectTransform = go.AddComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(width, height);
+
+            var image = go.AddComponent<Image>();
+            image.color = Color.white;
+
+            Component dropdownComp;
+            bool usingTmpDropdown = IsTMPAvailable() && _tmpDropdownType != null;
+
+            if (usingTmpDropdown)
+                dropdownComp = go.AddComponent(_tmpDropdownType);
+            else
+                dropdownComp = go.AddComponent<Dropdown>();
+
+            // Caption label
+            var captionGo = new GameObject("Label");
+            captionGo.transform.SetParent(go.transform, false);
+            var captionRect = captionGo.AddComponent<RectTransform>();
+            captionRect.anchorMin = Vector2.zero;
+            captionRect.anchorMax = Vector2.one;
+            captionRect.offsetMin = new Vector2(10, 0);
+            captionRect.offsetMax = new Vector2(-25, 0);
+            var captionText = AddTextComponent(captionGo, "", 14, Color.black);
+
+            // Arrow
+            var arrowGo = new GameObject("Arrow");
+            arrowGo.transform.SetParent(go.transform, false);
+            var arrowRect = arrowGo.AddComponent<RectTransform>();
+            arrowRect.anchorMin = new Vector2(1, 0);
+            arrowRect.anchorMax = new Vector2(1, 1);
+            arrowRect.pivot = new Vector2(1, 0.5f);
+            arrowRect.sizeDelta = new Vector2(20, 0);
+            var arrowImage = arrowGo.AddComponent<Image>();
+            arrowImage.color = new Color(0.2f, 0.2f, 0.2f);
+
+            // Template (dropdown list)
+            var templateGo = new GameObject("Template");
+            templateGo.transform.SetParent(go.transform, false);
+            var templateRect = templateGo.AddComponent<RectTransform>();
+            templateRect.anchorMin = new Vector2(0, 0);
+            templateRect.anchorMax = new Vector2(1, 0);
+            templateRect.pivot = new Vector2(0.5f, 1);
+            templateRect.sizeDelta = new Vector2(0, 150);
+            var templateImage = templateGo.AddComponent<Image>();
+            templateImage.color = Color.white;
+            var scrollRect = templateGo.AddComponent<ScrollRect>();
+
+            // Viewport
+            var viewportGo = new GameObject("Viewport");
+            viewportGo.transform.SetParent(templateGo.transform, false);
+            var viewportRect = viewportGo.AddComponent<RectTransform>();
+            viewportRect.anchorMin = Vector2.zero;
+            viewportRect.anchorMax = Vector2.one;
+            viewportRect.sizeDelta = Vector2.zero;
+            viewportGo.AddComponent<RectMask2D>();
+            var viewportImage = viewportGo.AddComponent<Image>();
+            viewportImage.color = new Color(1, 1, 1, 0);
+
+            // Content
+            var contentGo = new GameObject("Content");
+            contentGo.transform.SetParent(viewportGo.transform, false);
+            var contentRect = contentGo.AddComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0, 1);
+            contentRect.anchorMax = Vector2.one;
+            contentRect.pivot = new Vector2(0.5f, 1);
+            contentRect.sizeDelta = new Vector2(0, 28);
+
+            scrollRect.content = contentRect;
+            scrollRect.viewport = viewportRect;
+            scrollRect.horizontal = false;
+            scrollRect.movementType = ScrollRect.MovementType.Clamped;
+
+            // Item
+            var itemGo = new GameObject("Item");
+            itemGo.transform.SetParent(contentGo.transform, false);
+            var itemRect = itemGo.AddComponent<RectTransform>();
+            itemRect.anchorMin = new Vector2(0, 0.5f);
+            itemRect.anchorMax = new Vector2(1, 0.5f);
+            itemRect.sizeDelta = new Vector2(0, 28);
+            var itemToggle = itemGo.AddComponent<Toggle>();
+
+            // Item background
+            var itemBgGo = new GameObject("Item Background");
+            itemBgGo.transform.SetParent(itemGo.transform, false);
+            var itemBgRect = itemBgGo.AddComponent<RectTransform>();
+            itemBgRect.anchorMin = Vector2.zero;
+            itemBgRect.anchorMax = Vector2.one;
+            itemBgRect.sizeDelta = Vector2.zero;
+            var itemBgImage = itemBgGo.AddComponent<Image>();
+            itemBgImage.color = new Color(0.96f, 0.96f, 0.96f);
+
+            // Item checkmark
+            var checkGo = new GameObject("Item Checkmark");
+            checkGo.transform.SetParent(itemGo.transform, false);
+            var checkRect = checkGo.AddComponent<RectTransform>();
+            checkRect.anchorMin = new Vector2(0, 0.5f);
+            checkRect.anchorMax = new Vector2(0, 0.5f);
+            checkRect.sizeDelta = new Vector2(20, 20);
+            checkRect.anchoredPosition = new Vector2(10, 0);
+            var checkImage = checkGo.AddComponent<Image>();
+            checkImage.color = new Color(0.3f, 0.6f, 1f);
+
+            itemToggle.targetGraphic = itemBgImage;
+            itemToggle.graphic = checkImage;
+            itemToggle.isOn = true;
+
+            // Item label
+            var itemLabelGo = new GameObject("Item Label");
+            itemLabelGo.transform.SetParent(itemGo.transform, false);
+            var itemLabelRect = itemLabelGo.AddComponent<RectTransform>();
+            itemLabelRect.anchorMin = Vector2.zero;
+            itemLabelRect.anchorMax = Vector2.one;
+            itemLabelRect.offsetMin = new Vector2(25, 0);
+            itemLabelRect.offsetMax = Vector2.zero;
+            var itemLabelText = AddTextComponent(itemLabelGo, "Option", 14, Color.black);
+
+            // Set dropdown references via reflection (TMP) or direct (Legacy)
+            if (usingTmpDropdown)
+            {
+                _tmpDropdownType.GetProperty("captionText")?.SetValue(dropdownComp, captionText);
+                _tmpDropdownType.GetProperty("itemText")?.SetValue(dropdownComp, itemLabelText);
+                _tmpDropdownType.GetProperty("template")?.SetValue(dropdownComp, templateRect);
+            }
+            else
+            {
+                var dd = (Dropdown)dropdownComp;
+                dd.captionText = captionText as Text;
+                dd.itemText = itemLabelText as Text;
+                dd.template = templateRect;
+            }
+
+            templateGo.SetActive(false);
+
+            // Add options
+            var optionList = new List<string>();
+            if (!string.IsNullOrEmpty(options))
+            {
+                foreach (var opt in options.Split(','))
+                {
+                    var trimmed = opt.Trim();
+                    if (!string.IsNullOrEmpty(trimmed))
+                        optionList.Add(trimmed);
+                }
+            }
+            if (optionList.Count == 0)
+                optionList.AddRange(new[] { "Option A", "Option B", "Option C" });
+
+            if (usingTmpDropdown)
+            {
+                var addMethod = _tmpDropdownType.GetMethod("AddOptions", new[] { typeof(List<string>) });
+                addMethod?.Invoke(dropdownComp, new object[] { optionList });
+            }
+            else
+            {
+                ((Dropdown)dropdownComp).AddOptions(optionList);
+            }
+
+            Undo.RegisterCreatedObjectUndo(go, "Create Dropdown");
+            WorkflowManager.SnapshotObject(go, SnapshotType.Created);
+
+            return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, optionCount = optionList.Count };
+        }
+
+        [UnitySkill("ui_create_scrollview", "Create a ScrollRect (ScrollView) UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "scrollview", "ugui", "scroll-rect", "container" },
+            Outputs = new[] { "name", "instanceId", "parent", "horizontal", "vertical" },
+            TracksWorkflow = true)]
+        public static object UICreateScrollview(
+            string name = "ScrollView", string parent = null,
+            float width = 300, float height = 200,
+            bool horizontal = false, bool vertical = true,
+            string movementType = "Elastic")
+        {
+            var parentGo = FindOrCreateCanvas(parent);
+            if (parentGo == null)
+                return new { error = "Parent not found and could not create Canvas" };
+
+            var go = new GameObject(name);
+            go.transform.SetParent(parentGo.transform, false);
+
+            var rectTransform = go.AddComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(width, height);
+
+            var scrollRect = go.AddComponent<ScrollRect>();
+            scrollRect.horizontal = horizontal;
+            scrollRect.vertical = vertical;
+            if (Enum.TryParse<ScrollRect.MovementType>(movementType, true, out var mt))
+                scrollRect.movementType = mt;
+
+            var bgImage = go.AddComponent<Image>();
+            bgImage.color = new Color(0.1f, 0.1f, 0.1f, 0.5f);
+
+            // Viewport
+            var viewportGo = new GameObject("Viewport");
+            viewportGo.transform.SetParent(go.transform, false);
+            var viewportRect = viewportGo.AddComponent<RectTransform>();
+            viewportRect.anchorMin = Vector2.zero;
+            viewportRect.anchorMax = Vector2.one;
+            viewportRect.sizeDelta = Vector2.zero;
+            viewportGo.AddComponent<RectMask2D>();
+            var viewportImage = viewportGo.AddComponent<Image>();
+            viewportImage.color = new Color(1, 1, 1, 0);
+
+            // Content
+            var contentGo = new GameObject("Content");
+            contentGo.transform.SetParent(viewportGo.transform, false);
+            var contentRect = contentGo.AddComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0, 1);
+            contentRect.anchorMax = Vector2.one;
+            contentRect.pivot = new Vector2(0.5f, 1);
+            contentRect.sizeDelta = new Vector2(0, 400);
+
+            scrollRect.content = contentRect;
+            scrollRect.viewport = viewportRect;
+
+            Undo.RegisterCreatedObjectUndo(go, "Create ScrollView");
+            WorkflowManager.SnapshotObject(go, SnapshotType.Created);
+
+            return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, horizontal, vertical };
+        }
+
+        [UnitySkill("ui_create_rawimage", "Create a RawImage UI element (for Texture2D/RenderTexture)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "rawimage", "ugui", "texture", "render-texture" },
+            Outputs = new[] { "name", "instanceId", "parent", "hasTexture" },
+            TracksWorkflow = true)]
+        public static object UICreateRawImage(string name = "RawImage", string parent = null, string texturePath = null, float width = 100, float height = 100)
+        {
+            var parentGo = FindOrCreateCanvas(parent);
+            if (parentGo == null)
+                return new { error = "Parent not found and could not create Canvas" };
+
+            var go = new GameObject(name);
+            go.transform.SetParent(parentGo.transform, false);
+
+            var rectTransform = go.AddComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(width, height);
+
+            var rawImage = go.AddComponent<RawImage>();
+
+            if (!string.IsNullOrEmpty(texturePath))
+            {
+                var texture = AssetDatabase.LoadAssetAtPath<Texture>(texturePath);
+                if (texture != null)
+                    rawImage.texture = texture;
+            }
+
+            Undo.RegisterCreatedObjectUndo(go, "Create RawImage");
+            WorkflowManager.SnapshotObject(go, SnapshotType.Created);
+
+            return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, hasTexture = rawImage.texture != null };
+        }
+
+        [UnitySkill("ui_create_scrollbar", "Create a standalone Scrollbar UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "scrollbar", "ugui", "scroll", "navigation" },
+            Outputs = new[] { "name", "instanceId", "parent", "direction" },
+            TracksWorkflow = true)]
+        public static object UICreateScrollbar(
+            string name = "Scrollbar", string parent = null,
+            string direction = "BottomToTop", float value = 0, float size = 0.2f, int numberOfSteps = 0)
+        {
+            var parentGo = FindOrCreateCanvas(parent);
+            if (parentGo == null)
+                return new { error = "Parent not found and could not create Canvas" };
+
+            var go = new GameObject(name);
+            go.transform.SetParent(parentGo.transform, false);
+
+            var rectTransform = go.AddComponent<RectTransform>();
+            var isHorizontal = direction.Contains("Left") || direction.Contains("Right");
+            rectTransform.sizeDelta = isHorizontal ? new Vector2(160, 20) : new Vector2(20, 160);
+
+            var bgImage = go.AddComponent<Image>();
+            bgImage.color = new Color(0.8f, 0.8f, 0.8f);
+
+            // Sliding Area
+            var slideAreaGo = new GameObject("Sliding Area");
+            slideAreaGo.transform.SetParent(go.transform, false);
+            var slideAreaRect = slideAreaGo.AddComponent<RectTransform>();
+            slideAreaRect.anchorMin = Vector2.zero;
+            slideAreaRect.anchorMax = Vector2.one;
+            slideAreaRect.offsetMin = new Vector2(10, 10);
+            slideAreaRect.offsetMax = new Vector2(-10, -10);
+
+            // Handle
+            var handleGo = new GameObject("Handle");
+            handleGo.transform.SetParent(slideAreaGo.transform, false);
+            var handleRect = handleGo.AddComponent<RectTransform>();
+            handleRect.sizeDelta = new Vector2(20, 20);
+            var handleImage = handleGo.AddComponent<Image>();
+            handleImage.color = Color.white;
+
+            var scrollbar = go.AddComponent<Scrollbar>();
+            scrollbar.handleRect = handleRect;
+            scrollbar.targetGraphic = handleImage;
+            scrollbar.value = value;
+            scrollbar.size = size;
+            scrollbar.numberOfSteps = numberOfSteps;
+
+            if (Enum.TryParse<Scrollbar.Direction>(direction, true, out var dir))
+                scrollbar.direction = dir;
+
+            Undo.RegisterCreatedObjectUndo(go, "Create Scrollbar");
+            WorkflowManager.SnapshotObject(go, SnapshotType.Created);
+
+            return new { success = true, name = go.name, instanceId = go.GetInstanceID(), parent = parentGo.name, direction };
+        }
+
+        // ==================================================================================
+        // UI Property Configuration Skills
+        // ==================================================================================
+
+        [UnitySkill("ui_set_image", "Set Image properties (type, fillMethod, fillAmount, preserveAspect, sprite)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "image", "ugui", "sprite", "fill" },
+            Outputs = new[] { "name", "type", "fillMethod", "fillAmount", "preserveAspect" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UISetImage(
+            string name = null, int instanceId = 0, string path = null,
+            string type = null,
+            string fillMethod = null, float? fillAmount = null, bool? fillClockwise = null, int? fillOrigin = null,
+            bool? preserveAspect = null, string spritePath = null, float? pixelsPerUnitMultiplier = null)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            var image = go.GetComponent<Image>();
+            if (image == null) return new { error = "No Image component found" };
+
+            WorkflowManager.SnapshotObject(image);
+            Undo.RecordObject(image, "Set Image");
+
+            if (!string.IsNullOrEmpty(type) && Enum.TryParse<Image.Type>(type, true, out var imgType))
+                image.type = imgType;
+            if (!string.IsNullOrEmpty(fillMethod) && Enum.TryParse<Image.FillMethod>(fillMethod, true, out var fm))
+                image.fillMethod = fm;
+            if (fillAmount.HasValue)
+                image.fillAmount = fillAmount.Value;
+            if (fillClockwise.HasValue)
+                image.fillClockwise = fillClockwise.Value;
+            if (fillOrigin.HasValue)
+                image.fillOrigin = fillOrigin.Value;
+            if (preserveAspect.HasValue)
+                image.preserveAspect = preserveAspect.Value;
+            if (pixelsPerUnitMultiplier.HasValue)
+                image.pixelsPerUnitMultiplier = pixelsPerUnitMultiplier.Value;
+
+            if (!string.IsNullOrEmpty(spritePath))
+            {
+                var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
+                if (sprite != null)
+                    image.sprite = sprite;
+                else
+                    return new { error = $"Sprite not found: {spritePath}" };
+            }
+
+            return new
+            {
+                success = true, name = go.name,
+                type = image.type.ToString(),
+                fillMethod = image.fillMethod.ToString(),
+                fillAmount = image.fillAmount,
+                preserveAspect = image.preserveAspect
+            };
+        }
+
+        [UnitySkill("ui_add_layout_element", "Add or configure LayoutElement on a UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "layout-element", "ugui", "sizing", "flexible" },
+            Outputs = new[] { "name", "minWidth", "minHeight", "preferredWidth", "preferredHeight", "flexibleWidth", "flexibleHeight" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UIAddLayoutElement(
+            string name = null, int instanceId = 0, string path = null,
+            float? minWidth = null, float? minHeight = null,
+            float? preferredWidth = null, float? preferredHeight = null,
+            float? flexibleWidth = null, float? flexibleHeight = null,
+            bool? ignoreLayout = null, int? layoutPriority = null)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            var layout = go.GetComponent<LayoutElement>() ?? Undo.AddComponent<LayoutElement>(go);
+            WorkflowManager.SnapshotObject(layout);
+            Undo.RecordObject(layout, "Set LayoutElement");
+
+            if (minWidth.HasValue) layout.minWidth = minWidth.Value;
+            if (minHeight.HasValue) layout.minHeight = minHeight.Value;
+            if (preferredWidth.HasValue) layout.preferredWidth = preferredWidth.Value;
+            if (preferredHeight.HasValue) layout.preferredHeight = preferredHeight.Value;
+            if (flexibleWidth.HasValue) layout.flexibleWidth = flexibleWidth.Value;
+            if (flexibleHeight.HasValue) layout.flexibleHeight = flexibleHeight.Value;
+            if (ignoreLayout.HasValue) layout.ignoreLayout = ignoreLayout.Value;
+            if (layoutPriority.HasValue) layout.layoutPriority = layoutPriority.Value;
+
+            return new
+            {
+                success = true, name = go.name,
+                minWidth = layout.minWidth, minHeight = layout.minHeight,
+                preferredWidth = layout.preferredWidth, preferredHeight = layout.preferredHeight,
+                flexibleWidth = layout.flexibleWidth, flexibleHeight = layout.flexibleHeight,
+                ignoreLayout = layout.ignoreLayout
+            };
+        }
+
+        [UnitySkill("ui_add_canvas_group", "Add or configure CanvasGroup on a UI element (alpha, interactable, blocksRaycasts)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "canvas-group", "ugui", "alpha", "interactable" },
+            Outputs = new[] { "name", "alpha", "interactable", "blocksRaycasts" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UIAddCanvasGroup(
+            string name = null, int instanceId = 0, string path = null,
+            float? alpha = null, bool? interactable = null,
+            bool? blocksRaycasts = null, bool? ignoreParentGroups = null)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            var group = go.GetComponent<CanvasGroup>() ?? Undo.AddComponent<CanvasGroup>(go);
+            WorkflowManager.SnapshotObject(group);
+            Undo.RecordObject(group, "Set CanvasGroup");
+
+            if (alpha.HasValue) group.alpha = alpha.Value;
+            if (interactable.HasValue) group.interactable = interactable.Value;
+            if (blocksRaycasts.HasValue) group.blocksRaycasts = blocksRaycasts.Value;
+            if (ignoreParentGroups.HasValue) group.ignoreParentGroups = ignoreParentGroups.Value;
+
+            return new
+            {
+                success = true, name = go.name,
+                alpha = group.alpha, interactable = group.interactable,
+                blocksRaycasts = group.blocksRaycasts, ignoreParentGroups = group.ignoreParentGroups
+            };
+        }
+
+        [UnitySkill("ui_add_mask", "Add Mask or RectMask2D to a UI element (maskType: Mask or RectMask2D)",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "mask", "ugui", "clipping", "rect-mask" },
+            Outputs = new[] { "name", "maskType", "showMaskGraphic" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UIAddMask(
+            string name = null, int instanceId = 0, string path = null,
+            string maskType = "RectMask2D", bool showMaskGraphic = true)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            WorkflowManager.SnapshotObject(go);
+            Undo.RecordObject(go, "Add Mask");
+
+            string applied;
+            if (maskType.Equals("Mask", StringComparison.OrdinalIgnoreCase))
+            {
+                // Mask requires an Image component
+                if (go.GetComponent<Image>() == null)
+                    Undo.AddComponent<Image>(go);
+                var mask = go.GetComponent<Mask>() ?? Undo.AddComponent<Mask>(go);
+                mask.showMaskGraphic = showMaskGraphic;
+                applied = "Mask";
+            }
+            else
+            {
+                var rectMask = go.GetComponent<RectMask2D>() ?? Undo.AddComponent<RectMask2D>(go);
+                applied = "RectMask2D";
+            }
+
+            return new { success = true, name = go.name, maskType = applied, showMaskGraphic };
+        }
+
+        [UnitySkill("ui_add_outline", "Add Shadow or Outline effect to a UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Create,
+            Tags = new[] { "outline", "ugui", "shadow", "effect" },
+            Outputs = new[] { "name", "effectType", "effectColor", "effectDistance" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UIAddOutline(
+            string name = null, int instanceId = 0, string path = null,
+            string effectType = "Outline",
+            float r = 0, float g = 0, float b = 0, float a = 0.5f,
+            float distanceX = 1, float distanceY = -1,
+            bool useGraphicAlpha = true)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            WorkflowManager.SnapshotObject(go);
+            Undo.RecordObject(go, "Add Effect");
+
+            var effectColor = new Color(r, g, b, a);
+            var effectDistance = new Vector2(distanceX, distanceY);
+
+            string applied;
+            if (effectType.Equals("Shadow", StringComparison.OrdinalIgnoreCase))
+            {
+                var shadow = Undo.AddComponent<Shadow>(go);
+                shadow.effectColor = effectColor;
+                shadow.effectDistance = effectDistance;
+                shadow.useGraphicAlpha = useGraphicAlpha;
+                applied = "Shadow";
+            }
+            else
+            {
+                var outline = Undo.AddComponent<Outline>(go);
+                outline.effectColor = effectColor;
+                outline.effectDistance = effectDistance;
+                outline.useGraphicAlpha = useGraphicAlpha;
+                applied = "Outline";
+            }
+
+            return new { success = true, name = go.name, effectType = applied, effectColor = $"({r},{g},{b},{a})", effectDistance = $"({distanceX},{distanceY})" };
+        }
+
+        [UnitySkill("ui_configure_selectable", "Configure Selectable properties (transition, colors, navigation) on a UI element",
+            Category = SkillCategory.UI, Operation = SkillOperation.Modify,
+            Tags = new[] { "selectable", "ugui", "transition", "navigation", "colors" },
+            Outputs = new[] { "name", "transition", "interactable", "navigationMode" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
+        public static object UIConfigureSelectable(
+            string name = null, int instanceId = 0, string path = null,
+            string transition = null,
+            bool? interactable = null,
+            string navigationMode = null,
+            // ColorBlock properties
+            float? normalR = null, float? normalG = null, float? normalB = null,
+            float? highlightedR = null, float? highlightedG = null, float? highlightedB = null,
+            float? pressedR = null, float? pressedG = null, float? pressedB = null,
+            float? disabledR = null, float? disabledG = null, float? disabledB = null,
+            float? colorMultiplier = null, float? fadeDuration = null)
+        {
+            var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
+            if (error != null) return error;
+
+            var selectable = go.GetComponent<Selectable>();
+            if (selectable == null) return new { error = "No Selectable component found (Button, Toggle, Slider, etc.)" };
+
+            WorkflowManager.SnapshotObject(selectable);
+            Undo.RecordObject(selectable, "Configure Selectable");
+
+            if (interactable.HasValue)
+                selectable.interactable = interactable.Value;
+
+            if (!string.IsNullOrEmpty(transition) && Enum.TryParse<Selectable.Transition>(transition, true, out var trans))
+                selectable.transition = trans;
+
+            if (!string.IsNullOrEmpty(navigationMode))
+            {
+                if (Enum.TryParse<Navigation.Mode>(navigationMode, true, out var navMode))
+                {
+                    var nav = selectable.navigation;
+                    nav.mode = navMode;
+                    selectable.navigation = nav;
+                }
+            }
+
+            // Update colors if any color param is provided
+            if (normalR.HasValue || highlightedR.HasValue || pressedR.HasValue || disabledR.HasValue ||
+                colorMultiplier.HasValue || fadeDuration.HasValue)
+            {
+                var colors = selectable.colors;
+                if (normalR.HasValue || normalG.HasValue || normalB.HasValue)
+                    colors.normalColor = new Color(normalR ?? colors.normalColor.r, normalG ?? colors.normalColor.g, normalB ?? colors.normalColor.b);
+                if (highlightedR.HasValue || highlightedG.HasValue || highlightedB.HasValue)
+                    colors.highlightedColor = new Color(highlightedR ?? colors.highlightedColor.r, highlightedG ?? colors.highlightedColor.g, highlightedB ?? colors.highlightedColor.b);
+                if (pressedR.HasValue || pressedG.HasValue || pressedB.HasValue)
+                    colors.pressedColor = new Color(pressedR ?? colors.pressedColor.r, pressedG ?? colors.pressedColor.g, pressedB ?? colors.pressedColor.b);
+                if (disabledR.HasValue || disabledG.HasValue || disabledB.HasValue)
+                    colors.disabledColor = new Color(disabledR ?? colors.disabledColor.r, disabledG ?? colors.disabledColor.g, disabledB ?? colors.disabledColor.b);
+                if (colorMultiplier.HasValue)
+                    colors.colorMultiplier = colorMultiplier.Value;
+                if (fadeDuration.HasValue)
+                    colors.fadeDuration = fadeDuration.Value;
+                selectable.colors = colors;
+            }
+
+            return new
+            {
+                success = true, name = go.name,
+                transition = selectable.transition.ToString(),
+                interactable = selectable.interactable,
+                navigationMode = selectable.navigation.mode.ToString()
+            };
         }
     }
 }

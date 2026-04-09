@@ -14,6 +14,13 @@ namespace UnitySkills
         private static readonly Dictionary<string, TestRunInfo> _runningTests = new Dictionary<string, TestRunInfo>();
         private static TestRunnerApi _api;
 
+        [InitializeOnLoadMethod]
+        static void CleanupOnDomainReload()
+        {
+            _api = null;
+            _runningTests.Clear();
+        }
+
         private class TestRunInfo
         {
             public string JobId;
@@ -25,7 +32,10 @@ namespace UnitySkills
             public System.DateTime StartTime;
         }
 
-        [UnitySkill("test_run", "Run Unity tests asynchronously. Returns a jobId immediately — poll with test_get_result(jobId) to check status.")]
+        [UnitySkill("test_run", "Run Unity tests asynchronously. Returns a jobId immediately — poll with test_get_result(jobId) to check status.",
+            Category = SkillCategory.Test, Operation = SkillOperation.Execute,
+            Tags = new[] { "test", "run", "async", "editmode", "playmode" },
+            Outputs = new[] { "jobId", "testMode", "message" })]
         public static object TestRun(string testMode = "EditMode", string filter = null)
         {
             if (_api == null)
@@ -59,9 +69,20 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("test_get_result", "Get the result of a test run. Requires the jobId returned by test_run or test_run_by_name.")]
+        [UnitySkill("test_get_result", "Get the result of a test run. Requires the jobId returned by test_run or test_run_by_name.",
+            Category = SkillCategory.Test, Operation = SkillOperation.Query,
+            Tags = new[] { "test", "result", "status", "poll" },
+            Outputs = new[] { "jobId", "status", "totalTests", "passedTests", "failedTests", "failedTestNames" },
+            RequiresInput = new[] { "jobId" },
+            ReadOnly = true)]
         public static object TestGetResult(string jobId)
         {
+            // Clean stale entries older than 1 hour
+            var staleKeys = _runningTests
+                .Where(kv => (System.DateTime.Now - kv.Value.StartTime).TotalHours > 1)
+                .Select(kv => kv.Key).ToList();
+            foreach (var key in staleKeys) _runningTests.Remove(key);
+
             if (!_runningTests.TryGetValue(jobId, out var runInfo))
                 return new { error = $"Test job not found: {jobId}" };
 
@@ -77,7 +98,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("test_list", "List available tests")]
+        [UnitySkill("test_list", "List available tests",
+            Category = SkillCategory.Test, Operation = SkillOperation.Query,
+            Tags = new[] { "test", "list", "discover", "enumerate" },
+            Outputs = new[] { "testMode", "count", "tests" },
+            ReadOnly = true)]
         public static object TestList(string testMode = "EditMode", int limit = 100)
         {
             if (_api == null)
@@ -94,7 +119,11 @@ namespace UnitySkills
             return new { testMode, count = tests.Count, tests };
         }
 
-        [UnitySkill("test_cancel", "Cancel a running test")]
+        [UnitySkill("test_cancel", "Cancel a running test",
+            Category = SkillCategory.Test, Operation = SkillOperation.Execute,
+            Tags = new[] { "test", "cancel", "abort", "stop" },
+            Outputs = new[] { "cancelled" },
+            RequiresInput = new[] { "jobId" })]
         public static object TestCancel(string jobId = null)
         {
             if (_api == null)
@@ -105,7 +134,7 @@ namespace UnitySkills
             if (!string.IsNullOrEmpty(jobId) && _runningTests.ContainsKey(jobId))
             {
                 _runningTests[jobId].Status = "cancelled";
-                return new { success = true, cancelled = jobId };
+                return new { success = true, cancelled = jobId, note = "Unity TestRunnerApi does not support direct cancellation. The test status has been marked but the runner may continue." };
             }
 
             return new { error = "Cannot cancel tests directly. Wait for completion." };
@@ -149,7 +178,10 @@ namespace UnitySkills
 
             public void RunFinished(ITestResultAdaptor result)
             {
-                _runInfo.Status = "completed";
+                if (_runInfo.Status != "cancelled")
+                    _runInfo.Status = "completed";
+                TestSkills._api?.UnregisterCallbacks(this);
+                // Keep entry for result polling but it will be cleaned by stale check after 1 hour
             }
 
             public void TestStarted(ITestAdaptor test) { }
@@ -175,7 +207,10 @@ namespace UnitySkills
             }
         }
 
-        [UnitySkill("test_run_by_name", "Run specific tests by class or method name")]
+        [UnitySkill("test_run_by_name", "Run specific tests by class or method name",
+            Category = SkillCategory.Test, Operation = SkillOperation.Execute,
+            Tags = new[] { "test", "run", "name", "specific" },
+            Outputs = new[] { "jobId", "testName", "testMode" })]
         public static object TestRunByName(string testName, string testMode = "EditMode")
         {
             if (_api == null) _api = ScriptableObject.CreateInstance<TestRunnerApi>();
@@ -188,7 +223,11 @@ namespace UnitySkills
             return new { success = true, jobId, testName, testMode };
         }
 
-        [UnitySkill("test_get_last_result", "Get the most recent test run result")]
+        [UnitySkill("test_get_last_result", "Get the most recent test run result",
+            Category = SkillCategory.Test, Operation = SkillOperation.Query,
+            Tags = new[] { "test", "result", "last", "recent" },
+            Outputs = new[] { "jobId", "status", "total", "passed", "failed", "failedNames" },
+            ReadOnly = true)]
         public static object TestGetLastResult()
         {
             if (_runningTests.Count == 0) return new { error = "No test runs found" };
@@ -196,7 +235,11 @@ namespace UnitySkills
             return new { jobId = last.JobId, status = last.Status, total = last.TotalTests, passed = last.PassedTests, failed = last.FailedTests, failedNames = last.FailedTestNames.ToArray() };
         }
 
-        [UnitySkill("test_list_categories", "List test categories")]
+        [UnitySkill("test_list_categories", "List test categories",
+            Category = SkillCategory.Test, Operation = SkillOperation.Query,
+            Tags = new[] { "test", "categories", "list", "nunit" },
+            Outputs = new[] { "count", "categories" },
+            ReadOnly = true)]
         public static object TestListCategories(string testMode = "EditMode")
         {
             if (_api == null) _api = ScriptableObject.CreateInstance<TestRunnerApi>();
@@ -214,9 +257,16 @@ namespace UnitySkills
                 foreach (var child in test.Children) CollectCategories(child, categories);
         }
 
-        [UnitySkill("test_create_editmode", "Create an EditMode test script template")]
+        [UnitySkill("test_create_editmode", "Create an EditMode test script template",
+            Category = SkillCategory.Test, Operation = SkillOperation.Create,
+            Tags = new[] { "test", "create", "editmode", "template" },
+            Outputs = new[] { "path", "testName" })]
         public static object TestCreateEditMode(string testName, string folder = "Assets/Tests/Editor")
         {
+            if (Validate.Required(testName, "testName") is object nameErr) return nameErr;
+            if (testName.Contains("/") || testName.Contains("\\") || testName.Contains(".."))
+                return new { error = "testName must not contain path separators" };
+            if (Validate.SafePath(folder, "folder") is object folderErr) return folderErr;
             if (!System.IO.Directory.Exists(folder)) System.IO.Directory.CreateDirectory(folder);
             var path = System.IO.Path.Combine(folder, testName + ".cs");
             if (System.IO.File.Exists(path)) return new { error = $"File already exists: {path}" };
@@ -233,14 +283,29 @@ public class {testName}
     }}
 }}
 ";
-            System.IO.File.WriteAllText(path, content);
+            System.IO.File.WriteAllText(path, content, new System.Text.UTF8Encoding(false));
             AssetDatabase.ImportAsset(path);
-            return new { success = true, path, testName };
+            return new
+            {
+                success = true,
+                path,
+                testName,
+                serverAvailability = ServerAvailabilityHelper.CreateTransientUnavailableNotice(
+                    $"已创建测试脚本: {path}。Unity 可能短暂重载脚本域。",
+                    alwaysInclude: true)
+            };
         }
 
-        [UnitySkill("test_create_playmode", "Create a PlayMode test script template")]
+        [UnitySkill("test_create_playmode", "Create a PlayMode test script template",
+            Category = SkillCategory.Test, Operation = SkillOperation.Create,
+            Tags = new[] { "test", "create", "playmode", "template" },
+            Outputs = new[] { "path", "testName" })]
         public static object TestCreatePlayMode(string testName, string folder = "Assets/Tests/Runtime")
         {
+            if (Validate.Required(testName, "testName") is object nameErr) return nameErr;
+            if (testName.Contains("/") || testName.Contains("\\") || testName.Contains(".."))
+                return new { error = "testName must not contain path separators" };
+            if (Validate.SafePath(folder, "folder") is object folderErr) return folderErr;
             if (!System.IO.Directory.Exists(folder)) System.IO.Directory.CreateDirectory(folder);
             var path = System.IO.Path.Combine(folder, testName + ".cs");
             if (System.IO.File.Exists(path)) return new { error = $"File already exists: {path}" };
@@ -259,12 +324,24 @@ public class {testName}
     }}
 }}
 ";
-            System.IO.File.WriteAllText(path, content);
+            System.IO.File.WriteAllText(path, content, new System.Text.UTF8Encoding(false));
             AssetDatabase.ImportAsset(path);
-            return new { success = true, path, testName };
+            return new
+            {
+                success = true,
+                path,
+                testName,
+                serverAvailability = ServerAvailabilityHelper.CreateTransientUnavailableNotice(
+                    $"已创建测试脚本: {path}。Unity 可能短暂重载脚本域。",
+                    alwaysInclude: true)
+            };
         }
 
-        [UnitySkill("test_get_summary", "Get aggregated test summary across all runs")]
+        [UnitySkill("test_get_summary", "Get aggregated test summary across all runs",
+            Category = SkillCategory.Test, Operation = SkillOperation.Query,
+            Tags = new[] { "test", "summary", "aggregate", "report" },
+            Outputs = new[] { "totalRuns", "completedRuns", "totalPassed", "totalFailed", "allFailedTests" },
+            ReadOnly = true)]
         public static object TestGetSummary()
         {
             var runs = _runningTests.Values.ToList();

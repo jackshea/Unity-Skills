@@ -13,11 +13,29 @@ namespace UnitySkills
     /// </summary>
     public static class SmartSkills
     {
+        private static readonly Dictionary<string, System.Type> CommonUnityTypes = new Dictionary<string, System.Type>(System.StringComparer.OrdinalIgnoreCase)
+        {
+            {"Light", typeof(Light)},
+            {"Camera", typeof(Camera)},
+            {"MeshRenderer", typeof(MeshRenderer)},
+            {"MeshFilter", typeof(MeshFilter)},
+            {"BoxCollider", typeof(BoxCollider)},
+            {"SphereCollider", typeof(SphereCollider)},
+            {"Rigidbody", typeof(Rigidbody)},
+            {"AudioSource", typeof(AudioSource)},
+            {"Animator", typeof(Animator)},
+            {"Transform", typeof(Transform)},
+        };
+
         // ==================================================================================
         // 1. Smart Query ("The SQL for Unity Scene")
         // ==================================================================================
 
-        [UnitySkill("smart_scene_query", "Query objects by component property (params: componentName, propertyName, op, value). e.g. componentName='Light', propertyName='intensity', op='>', value='10'")]
+        [UnitySkill("smart_scene_query", "Query objects by component property (params: componentName, propertyName, op, value). e.g. componentName='Light', propertyName='intensity', op='>', value='10'",
+            Category = SkillCategory.Smart, Operation = SkillOperation.Query,
+            Tags = new[] { "query", "component", "property", "filter", "search" },
+            Outputs = new[] { "count", "query", "results" },
+            ReadOnly = true)]
         public static object SmartSceneQuery(
             string componentName, 
             string propertyName, 
@@ -68,7 +86,11 @@ namespace UnitySkills
         // 2. Smart Layout ("The Automated Designer")
         // ==================================================================================
 
-        [UnitySkill("smart_scene_layout", "Organize selected objects into a layout (Linear, Grid, Circle, Arc). Requires objects selected in Hierarchy first.")]
+        [UnitySkill("smart_scene_layout", "Organize selected objects into a layout (Linear, Grid, Circle, Arc). Requires objects selected in Hierarchy first.", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "layout", "arrange", "grid", "circle", "linear" },
+            Outputs = new[] { "layout", "count", "spacing" },
+            RequiresInput = new[] { "selection" })]
         public static object SmartSceneLayout(
             string layoutType = "Linear",   // Linear, Grid, Circle, Arc
             string axis = "X",              // X, Y, Z for Linear; ignored for Circle
@@ -81,7 +103,7 @@ namespace UnitySkills
             if (selected.Count == 0) 
                 return new { success = false, error = "No GameObjects selected. Select objects in Hierarchy first." };
 
-            // Workflow 支持
+            // Workflow 鏀寔
             foreach (var go in selected)
                 WorkflowManager.SnapshotObject(go.transform);
 
@@ -137,7 +159,11 @@ namespace UnitySkills
         // 3. Smart Binder ("The Auto-Wiring Engineer")
         // ==================================================================================
 
-        [UnitySkill("smart_reference_bind", "Auto-fill a List/Array field with objects matching tag or name pattern")]
+        [UnitySkill("smart_reference_bind", "Auto-fill a List/Array field with objects matching tag or name pattern", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "bind", "reference", "auto-wire", "list", "field" },
+            Outputs = new[] { "boundCount", "field", "appendMode" },
+            RequiresInput = new[] { "gameObject", "component" })]
         public static object SmartReferenceBind(
             string targetName,          // Target GameObject name
             string componentName,       // Component on target
@@ -146,6 +172,8 @@ namespace UnitySkills
             string sourceName = null,   // Find by name contains
             bool appendMode = false)    // If true, append to existing; if false, replace
         {
+            if (string.IsNullOrEmpty(fieldName)) return new { error = "fieldName is required" };
+
             // 1. Find Target
             var targetGo = GameObject.Find(targetName);
             if (targetGo == null) 
@@ -182,7 +210,7 @@ namespace UnitySkills
             }
             if (!string.IsNullOrEmpty(sourceName))
             {
-                sources.AddRange(Object.FindObjectsOfType<GameObject>().Where(g => g.name.Contains(sourceName)));
+                sources.AddRange(FindHelper.FindAll<GameObject>().Where(g => g.name.Contains(sourceName)));
             }
             sources = sources.Distinct().ToList();
 
@@ -256,22 +284,8 @@ namespace UnitySkills
 
         private static System.Type GetTypeByName(string name)
         {
-            // Fast path: common Unity types
-            var common = new Dictionary<string, System.Type>(System.StringComparer.OrdinalIgnoreCase)
-            {
-                {"Light", typeof(Light)},
-                {"Camera", typeof(Camera)},
-                {"MeshRenderer", typeof(MeshRenderer)},
-                {"MeshFilter", typeof(MeshFilter)},
-                {"BoxCollider", typeof(BoxCollider)},
-                {"SphereCollider", typeof(SphereCollider)},
-                {"Rigidbody", typeof(Rigidbody)},
-                {"AudioSource", typeof(AudioSource)},
-                {"Animator", typeof(Animator)},
-                {"Transform", typeof(Transform)},
-            };
-            
-            if (common.TryGetValue(name, out var t)) return t;
+            // Fast path: common Unity types (static dictionary)
+            if (CommonUnityTypes.TryGetValue(name, out var t)) return t;
 
             // Slow path: reflection
             return System.AppDomain.CurrentDomain.GetAssemblies()
@@ -355,7 +369,11 @@ namespace UnitySkills
             return val?.ToString() ?? "null";
         }
 
-        [UnitySkill("smart_scene_query_spatial", "Find objects within a sphere/box region, optionally filtered by component")]
+        [UnitySkill("smart_scene_query_spatial", "Find objects within a sphere/box region, optionally filtered by component",
+            Category = SkillCategory.Smart, Operation = SkillOperation.Query,
+            Tags = new[] { "spatial", "sphere", "overlap", "physics", "search" },
+            Outputs = new[] { "count", "center", "radius", "results" },
+            ReadOnly = true)]
         public static object SmartSceneQuerySpatial(
             float x, float y, float z, float radius = 10f,
             string componentFilter = null, int limit = 50)
@@ -382,7 +400,11 @@ namespace UnitySkills
             return new { success = true, count = results.Count, center = new { x, y, z }, radius, results };
         }
 
-        [UnitySkill("smart_align_to_ground", "Raycast selected objects downward to align them to the ground. Requires objects selected in Hierarchy first.")]
+        [UnitySkill("smart_align_to_ground", "Raycast selected objects downward to align them to the ground. Requires objects selected in Hierarchy first.", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "align", "ground", "raycast", "snap" },
+            Outputs = new[] { "aligned", "total" },
+            RequiresInput = new[] { "selection" })]
         public static object SmartAlignToGround(float maxDistance = 100f, bool alignRotation = false)
         {
             var selected = Selection.gameObjects;
@@ -402,7 +424,11 @@ namespace UnitySkills
             return new { success = true, aligned, total = selected.Length };
         }
 
-        [UnitySkill("smart_distribute", "Evenly distribute selected objects between first and last positions. Requires at least 3 objects selected in Hierarchy first.")]
+        [UnitySkill("smart_distribute", "Evenly distribute selected objects between first and last positions. Requires at least 3 objects selected in Hierarchy first.", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "distribute", "spacing", "even", "arrange" },
+            Outputs = new[] { "distributed", "axis" },
+            RequiresInput = new[] { "selection" })]
         public static object SmartDistribute(string axis = "X")
         {
             var selected = Selection.gameObjects.OrderBy(g => g.transform.GetSiblingIndex()).ToList();
@@ -422,7 +448,11 @@ namespace UnitySkills
             return new { success = true, distributed = selected.Count, axis };
         }
 
-        [UnitySkill("smart_snap_to_grid", "Snap selected objects to a grid")]
+        [UnitySkill("smart_snap_to_grid", "Snap selected objects to a grid", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "snap", "grid", "align", "position" },
+            Outputs = new[] { "snapped", "gridSize" },
+            RequiresInput = new[] { "selection" })]
         public static object SmartSnapToGrid(float gridSize = 1f)
         {
             var selected = Selection.gameObjects;
@@ -440,7 +470,11 @@ namespace UnitySkills
             return new { success = true, snapped = selected.Length, gridSize };
         }
 
-        [UnitySkill("smart_randomize_transform", "Randomize position/rotation/scale of selected objects within ranges")]
+        [UnitySkill("smart_randomize_transform", "Randomize position/rotation/scale of selected objects within ranges", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify,
+            Tags = new[] { "randomize", "transform", "scatter", "variation" },
+            Outputs = new[] { "randomized" },
+            RequiresInput = new[] { "selection" })]
         public static object SmartRandomizeTransform(
             float posRange = 0f, float rotRange = 0f, float scaleMin = 1f, float scaleMax = 1f)
         {
@@ -457,7 +491,11 @@ namespace UnitySkills
             return new { success = true, randomized = selected.Length };
         }
 
-        [UnitySkill("smart_replace_objects", "Replace selected objects with a prefab (preserving transforms). Requires objects selected in Hierarchy first.")]
+        [UnitySkill("smart_replace_objects", "Replace selected objects with a prefab (preserving transforms). Requires objects selected in Hierarchy first.", TracksWorkflow = true,
+            Category = SkillCategory.Smart, Operation = SkillOperation.Modify | SkillOperation.Delete,
+            Tags = new[] { "replace", "prefab", "swap", "substitute" },
+            Outputs = new[] { "replaced", "prefab" },
+            RequiresInput = new[] { "selection", "prefabPath" })]
         public static object SmartReplaceObjects(string prefabPath)
         {
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
@@ -481,7 +519,10 @@ namespace UnitySkills
             return new { success = true, replaced = selected.Length, prefab = prefabPath };
         }
 
-        [UnitySkill("smart_select_by_component", "Select all objects that have a specific component")]
+        [UnitySkill("smart_select_by_component", "Select all objects that have a specific component",
+            Category = SkillCategory.Smart, Operation = SkillOperation.Execute,
+            Tags = new[] { "select", "component", "filter", "batch" },
+            Outputs = new[] { "selected", "component" })]
         public static object SmartSelectByComponent(string componentName)
         {
             var type = GetTypeByName(componentName);

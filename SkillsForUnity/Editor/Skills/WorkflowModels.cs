@@ -7,8 +7,27 @@ namespace UnitySkills
     [Serializable]
     public class WorkflowHistoryData
     {
+        public const int CurrentSchemaVersion = 2;
+        public int schemaVersion = CurrentSchemaVersion;
         public List<WorkflowTask> tasks = new List<WorkflowTask>();
         public List<WorkflowTask> undoneStack = new List<WorkflowTask>(); // Stack of undone tasks for redo
+
+        public void EnsureDefaults()
+        {
+            if (schemaVersion <= 0)
+                schemaVersion = CurrentSchemaVersion;
+
+            if (tasks == null) tasks = new List<WorkflowTask>();
+            if (undoneStack == null) undoneStack = new List<WorkflowTask>();
+
+            tasks.RemoveAll(task => task == null);
+            undoneStack.RemoveAll(task => task == null);
+
+            foreach (var task in tasks)
+                task?.EnsureSnapshotIndex();
+            foreach (var task in undoneStack)
+                task?.EnsureSnapshotIndex();
+        }
     }
 
     [Serializable]
@@ -20,10 +39,49 @@ namespace UnitySkills
         public long timestamp;
         public string sessionId;  // Groups tasks belonging to the same conversation/session
         public List<ObjectSnapshot> snapshots = new List<ObjectSnapshot>();
+        [NonSerialized] private HashSet<string> _snapshotIds;
 
         public string GetFormattedTime()
         {
             return DateTimeOffset.FromUnixTimeSeconds(timestamp).ToLocalTime().ToString("HH:mm:ss");
+        }
+
+        internal void EnsureSnapshotIndex()
+        {
+            if (_snapshotIds != null)
+                return;
+
+            _snapshotIds = new HashSet<string>(StringComparer.Ordinal);
+            if (snapshots == null)
+            {
+                snapshots = new List<ObjectSnapshot>();
+                return;
+            }
+
+            snapshots.RemoveAll(snapshot => snapshot == null);
+            foreach (var snapshot in snapshots)
+            {
+                if (!string.IsNullOrEmpty(snapshot.globalObjectId))
+                    _snapshotIds.Add(snapshot.globalObjectId);
+            }
+        }
+
+        internal bool TryRegisterSnapshotId(string globalObjectId)
+        {
+            if (string.IsNullOrEmpty(globalObjectId))
+                return false;
+
+            EnsureSnapshotIndex();
+            return _snapshotIds.Add(globalObjectId);
+        }
+
+        internal bool HasSnapshotId(string globalObjectId)
+        {
+            if (string.IsNullOrEmpty(globalObjectId))
+                return false;
+
+            EnsureSnapshotIndex();
+            return _snapshotIds.Contains(globalObjectId);
         }
     }
 

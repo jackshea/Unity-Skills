@@ -328,5 +328,22 @@ namespace UnitySkills.Tests.Core
 
             Assert.IsNull(result);
         }
+
+        [Test]
+        public void WorkflowHistoryData_EnsureDefaults_MigratesLegacySchemaAndCollections()
+        {
+            var history = new WorkflowHistoryData
+            {
+                schemaVersion = 0,
+                tasks = null,
+                undoneStack = null
+            };
+
+            history.EnsureDefaults();
+
+            Assert.AreEqual(WorkflowHistoryData.CurrentSchemaVersion, history.schemaVersion);
+            Assert.IsNotNull(history.tasks);
+            Assert.IsNotNull(history.undoneStack);
+        }
     }
 }

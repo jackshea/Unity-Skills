@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
@@ -32,36 +33,50 @@ namespace UnitySkills
         private static Thread _keepAliveThread;
         private static volatile bool _isRunning;
         private static int _port = 8090;
-        private const string DefaultServerIp = "0.0.0.0";
+        private static readonly string _prefixBase = "http://localhost:";
+        private static string _prefix => $"{_prefixBase}{_port}/";
         
         // Job queue - HTTP thread enqueues, Main thread dequeues and processes
         private static readonly Queue<RequestJob> _jobQueue = new Queue<RequestJob>();
         private static readonly object _queueLock = new object();
         private static bool _updateHooked = false;
+        private static int _pendingRequests = 0;
         
-        // Rate limiting (processed on main thread only)
-        private static int _requestsThisSecond = 0;
-        private static long _lastRateLimitResetTicks = 0;
         private const int MaxRequestsPerSecond = 100;
+        private const int MaxQueuedRequests = 200;
+        private const int MaxPendingRequests = 300;
+        private static readonly ConcurrentBag<RequestJob> _requestJobPool = new ConcurrentBag<RequestJob>();
+        private static int _poolSize;
+
+        // Admission limiting on the listener thread to avoid queue and thread blowups.
+        private static int _admittedThisSecond = 0;
+        private static long _lastAdmissionResetTicks = 0;
         
-        // Keep-alive polling interval (ms) — how often the keep-alive thread checks for pending jobs
+        // Keep-alive polling interval (ms) for checking pending jobs.
         private const int KeepAlivePollingMs = 50;
 
-        // Keep-alive forced wakeup — configurable interval for unconditional main-thread wakeup
+        // Configurable interval for unconditional main-thread wakeup.
         private const string PrefKeyKeepAliveInterval = "UnitySkills_KeepAliveIntervalSeconds";
+
+        // Thread-safe cached value for KeepAliveIntervalSeconds (EditorPrefs is main-thread only)
+        private static long _cachedKeepAliveIntervalTicks = 10L * TimeSpan.TicksPerSecond;
 
         /// <summary>
         /// How often (seconds) the keep-alive thread forces a main-thread wakeup,
         /// even when there are no pending jobs. Keeps watchdog and heartbeat alive
-        /// while Unity is unfocused. Default 30s, minimum 5s.
+        /// while Unity is unfocused. Default 10s, minimum 1s.
         /// </summary>
         public static int KeepAliveIntervalSeconds
         {
-            get => Mathf.Max(5, EditorPrefs.GetInt(PrefKeyKeepAliveInterval, 30));
-            set => EditorPrefs.SetInt(PrefKeyKeepAliveInterval, Mathf.Max(5, value));
+            get => Mathf.Max(1, EditorPrefs.GetInt(PrefKeyKeepAliveInterval, 10));
+            set
+            {
+                EditorPrefs.SetInt(PrefKeyKeepAliveInterval, Mathf.Max(1, value));
+                _cachedKeepAliveIntervalTicks = (long)Mathf.Max(1, value) * TimeSpan.TicksPerSecond;
+            }
         }
         // Request processing timeout - cached for thread safety (EditorPrefs is main-thread only)
-        private static int _cachedTimeoutMs = 60 * 60 * 1000;
+        private static int _cachedTimeoutMs = 15 * 60 * 1000;
         private static int RequestTimeoutMs => _cachedTimeoutMs;
         internal static void RefreshTimeoutCache() => _cachedTimeoutMs = RequestTimeoutMinutes * 60 * 1000;
         // Maximum allowed POST body size
@@ -74,14 +89,21 @@ namespace UnitySkills
         private const double WatchdogInterval = 15.0;
         private static double _lastWatchdogCheck = 0;
 
+        // Safety net: recover server after Domain Reload if delayCall failed to fire
+        private const double SafetyNetInterval = 5.0;
+        private static double _lastSafetyNetCheck = 0;
+
         // KeepAlive: unconditional wakeup interval (ticks; 5s = 50_000_000 ticks)
         private static long _lastForceWakeTicks = 0;
 
         // Statistics
         private static long _totalRequestsProcessed = 0;
         private static long _totalRequestsReceived = 0;
+
+        // Startup diagnostic: counts ProcessJobQueue ticks since Start() for self-test diagnostics
+        private static volatile int _pjqTicksSinceStart = -1;
         
-        // JSON 序列化设置，禁用 Unicode 转义确保中文正确显示
+        // Keep Unicode readable instead of forcing escaped sequences.
         private static readonly JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
         {
             StringEscapeHandling = StringEscapeHandling.Default
@@ -94,12 +116,14 @@ namespace UnitySkills
         private static string PREF_AUTO_START => PrefKey("AutoStart");
         private static string PREF_TOTAL_PROCESSED => PrefKey("TotalProcessed");
         private static string PREF_LAST_PORT => PrefKey("LastPort");
-        
+        private static string PREF_CONSECUTIVE_FAILURES => PrefKey("ConsecutiveRestartFailures");
+        private const int MaxConsecutiveFailures = 10;
+
         // Domain Reload tracking
         private static bool _domainReloadPending = false;
 
         public static bool IsRunning => _isRunning;
-        public static string Url => $"http://{ServerIp}:{_port}/";
+        public static string Url => _prefix;
         public static int Port => _port;
         public static int QueuedRequests { get { lock (_queueLock) { return _jobQueue.Count; } } }
         public static long TotalProcessed => _totalRequestsProcessed;
@@ -121,7 +145,6 @@ namespace UnitySkills
         }
 
         private const string PrefKeyPreferredPort = "UnitySkills_PreferredPort";
-        private const string PrefKeyServerIp = "UnitySkills_ServerIp";
 
         /// <summary>
         /// Gets or sets the preferred port for the server.
@@ -133,75 +156,20 @@ namespace UnitySkills
             set => EditorPrefs.SetInt(PrefKeyPreferredPort, value);
         }
 
-        /// <summary>
-        /// Gets or sets the configured bind IP for the server.
-        /// Default is 0.0.0.0, which binds on all interfaces.
-        /// </summary>
-        public static string ServerIp
-        {
-            get => NormalizeServerIp(EditorPrefs.GetString(PrefKeyServerIp, DefaultServerIp));
-            set => EditorPrefs.SetString(PrefKeyServerIp, NormalizeServerIp(value));
-        }
-
         private const string PrefKeyRequestTimeout = "UnitySkills_RequestTimeoutMinutes";
 
         /// <summary>
         /// Gets or sets the request timeout in minutes.
-        /// Default 60 minutes. Minimum 1 minute.
+        /// Default 15 minutes. Minimum 1 minute.
         /// </summary>
         public static int RequestTimeoutMinutes
         {
-            get => Mathf.Max(1, EditorPrefs.GetInt(PrefKeyRequestTimeout, 60));
+            get => Mathf.Max(1, EditorPrefs.GetInt(PrefKeyRequestTimeout, 15));
             set
             {
                 EditorPrefs.SetInt(PrefKeyRequestTimeout, Mathf.Max(1, value));
                 RefreshTimeoutCache();
             }
-        }
-
-        private static string NormalizeServerIp(string ip)
-        {
-            if (string.IsNullOrWhiteSpace(ip))
-                return DefaultServerIp;
-
-            ip = ip.Trim();
-            if (string.Equals(ip, "localhost", StringComparison.OrdinalIgnoreCase))
-                return "127.0.0.1";
-
-            if (IPAddress.TryParse(ip, out var parsed))
-                return parsed.ToString();
-
-            return DefaultServerIp;
-        }
-
-        private static IEnumerable<string> GetListenerPrefixes(int port)
-        {
-            string serverIp = ServerIp;
-            if (serverIp == "0.0.0.0")
-            {
-                yield return $"http://+:{port}/";
-                yield return $"http://localhost:{port}/";
-                yield return $"http://127.0.0.1:{port}/";
-                yield break;
-            }
-
-            yield return $"http://{serverIp}:{port}/";
-
-            if (serverIp != "127.0.0.1")
-            {
-                yield return $"http://localhost:{port}/";
-                yield return $"http://127.0.0.1:{port}/";
-            }
-        }
-
-        private static HttpListener CreateAndStartListener(int port)
-        {
-            var listener = new HttpListener();
-            foreach (var prefix in GetListenerPrefixes(port))
-                listener.Prefixes.Add(prefix);
-
-            listener.Start();
-            return listener;
         }
 
         /// <summary>
@@ -218,16 +186,143 @@ namespace UnitySkills
             public long EnqueueTimeTicks;
             public string RequestId;
             public string AgentId;
+            public string QueryString;
 
             // Result (set by Main thread)
             public string ResponseJson;
             public int StatusCode;
             public bool IsProcessed;
-            public ManualResetEventSlim CompletionSignal;
+            public bool ResponseDispatched;
+            public int PoolReturned;
+            public ManualResetEventSlim CompletionSignal = new ManualResetEventSlim(false);
+
+            public void Prepare(HttpListenerContext context, string httpMethod, string path, string body, string requestId, string agentId, string queryString = null)
+            {
+                Context = context;
+                HttpMethod = httpMethod;
+                Path = path;
+                Body = body;
+                EnqueueTimeTicks = DateTime.UtcNow.Ticks;
+                RequestId = requestId;
+                AgentId = agentId;
+                QueryString = queryString;
+                ResponseJson = null;
+                StatusCode = 200;
+                IsProcessed = false;
+                ResponseDispatched = false;
+                PoolReturned = 0;
+                CompletionSignal.Reset();
+            }
+
+            public void Reset()
+            {
+                Context = null;
+                HttpMethod = null;
+                Path = null;
+                Body = null;
+                EnqueueTimeTicks = 0;
+                RequestId = null;
+                AgentId = null;
+                QueryString = null;
+                ResponseJson = null;
+                StatusCode = 200;
+                IsProcessed = false;
+                ResponseDispatched = false;
+                // Note: PoolReturned is managed by ReturnRequestJob/Prepare, not Reset
+                CompletionSignal.Reset();
+            }
         }
 
         // Request ID counter
         private static long _requestIdCounter = 0;
+
+        private static bool TryReservePendingSlot()
+        {
+            int pending = Interlocked.Increment(ref _pendingRequests);
+            if (pending <= MaxPendingRequests)
+                return true;
+
+            ReleasePendingSlot();
+            return false;
+        }
+
+        private static void ReleasePendingSlot()
+        {
+            if (Interlocked.Decrement(ref _pendingRequests) < 0)
+                Interlocked.Exchange(ref _pendingRequests, 0);
+        }
+
+        private static RequestJob RentRequestJob()
+        {
+            if (_requestJobPool.TryTake(out var job))
+            {
+                Interlocked.Decrement(ref _poolSize);
+                return job;
+            }
+
+            return new RequestJob();
+        }
+
+        private static void ReturnRequestJob(RequestJob job)
+        {
+            if (job == null)
+                return;
+
+            if (Interlocked.Exchange(ref job.PoolReturned, 1) == 1)
+                return;
+
+            if (Interlocked.Increment(ref _poolSize) > MaxPendingRequests)
+            {
+                Interlocked.Decrement(ref _poolSize);
+                job.CompletionSignal.Dispose();
+                return;
+            }
+            job.Reset();
+            _requestJobPool.Add(job);
+        }
+
+        private static bool CheckAdmissionRateLimit()
+        {
+            long now = DateTime.UtcNow.Ticks;
+
+            if (now - _lastAdmissionResetTicks >= TimeSpan.TicksPerSecond)
+            {
+                _admittedThisSecond = 0;
+                _lastAdmissionResetTicks = now;
+            }
+
+            _admittedThisSecond++;
+            return _admittedThisSecond <= MaxRequestsPerSecond;
+        }
+
+        private static void SendImmediateJsonResponse(HttpListenerContext context, HttpListenerRequest request, int statusCode, object payload)
+        {
+            HttpListenerResponse response = null;
+            try
+            {
+                response = context.Response;
+                response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, X-Agent-Id");
+                response.Headers.Add("Access-Control-Allow-Origin", "*");
+                response.Headers.Add("X-Request-Id", $"req_{Interlocked.Increment(ref _requestIdCounter):X8}");
+                response.Headers.Add("X-Agent-Id", DetectAgent(request));
+                response.StatusCode = statusCode;
+
+                string responseJson = JsonConvert.SerializeObject(payload, _jsonSettings);
+                byte[] buffer = Encoding.UTF8.GetBytes(responseJson);
+                response.ContentType = "application/json; charset=utf-8";
+                response.ContentLength64 = buffer.Length;
+                response.OutputStream.Write(buffer, 0, buffer.Length);
+            }
+            catch
+            {
+                // Ignore write errors. The client may have already disconnected.
+            }
+            finally
+            {
+                try { response?.Close(); } catch { }
+            }
+        }
 
         // Agent detection table - keyword to agent ID mapping
         private static readonly (string keyword, string agentId)[] _agentKeywords = new[]
@@ -285,7 +380,7 @@ namespace UnitySkills
             
             // Check if we should auto-restart after Domain Reload
             // Use delayed call to ensure Unity is fully initialized
-            EditorApplication.delayCall += CheckAndRestoreServer;
+            EditorApplication.delayCall += () => ScheduleDelayedCall(1.0, CheckAndRestoreServer);
         }
         
         /// <summary>
@@ -295,8 +390,12 @@ namespace UnitySkills
         {
             _domainReloadPending = true;
 
-            // Persist the "should run" state before domain is destroyed
-            EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, _isRunning);
+            // 关键修复：仅在服务器正在运行时写入 true
+            // 当 _isRunning=false（前次重启失败），不覆写——保留已有的 true 意图
+            if (_isRunning)
+            {
+                EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, true);
+            }
 
             // Persist statistics
             EditorPrefs.SetString(PREF_TOTAL_PROCESSED, _totalRequestsProcessed.ToString());
@@ -311,7 +410,7 @@ namespace UnitySkills
                 try { _listener?.Stop(); } catch { }
                 try { _listener?.Close(); } catch { }
                 // Wait for threads to exit so port is fully released
-                try { _listenerThread?.Join(500); } catch { }
+                try { _listenerThread?.Join(2000); } catch { }
                 try { _keepAliveThread?.Join(100); } catch { }
             }
         }
@@ -350,6 +449,7 @@ namespace UnitySkills
         {
             // Always clear on quit - we don't want auto-start on next Unity session
             EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, false);
+            EditorPrefs.SetInt(PREF_CONSECUTIVE_FAILURES, 0);
             Stop();
         }
         
@@ -370,12 +470,43 @@ namespace UnitySkills
 
             if (shouldRun && autoStart && !_isRunning)
             {
+                int failures = EditorPrefs.GetInt(PREF_CONSECUTIVE_FAILURES, 0);
+
+                // Decay: if last failure was more than 5 minutes ago, reset counter
+                if (failures > 0)
+                {
+                    string lastFailTimeKey = PrefKey("LastFailTime");
+                    double lastFailTime = 0;
+                    double.TryParse(EditorPrefs.GetString(lastFailTimeKey, "0"), out lastFailTime);
+                    if (EditorApplication.timeSinceStartup - lastFailTime > 300)
+                    {
+                        failures = 0;
+                        EditorPrefs.SetInt(PREF_CONSECUTIVE_FAILURES, 0);
+                        SkillsLogger.LogVerbose("[UnitySkills] Consecutive failure counter reset (5 min decay)");
+                    }
+                }
+
+                if (failures >= MaxConsecutiveFailures)
+                {
+                    SkillsLogger.LogError(
+                        $"[UnitySkills] Server restart abandoned after {failures} consecutive failures across Domain Reloads.\n" +
+                        "Please restart manually: Window > UnitySkills > Start Server");
+                    EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, false);
+                    _restoreRetryCount = 0;
+                    return;
+                }
+
                 int lastPort = EditorPrefs.GetInt(PREF_LAST_PORT, 0);
                 int restorePort = (lastPort >= 8090 && lastPort <= 8100) ? lastPort : PreferredPort;
-                SkillsLogger.Log($"Auto-restoring server after Domain Reload (port={restorePort}, attempt {_restoreRetryCount + 1}/{MaxRestoreRetries + 1})...");
+                SkillsLogger.Log($"Auto-restoring server after Domain Reload (port={restorePort}, attempt {_restoreRetryCount + 1}/{MaxRestoreRetries + 1}, consecutive failures={failures})...");
                 Start(restorePort, fallbackToAuto: true);
 
-                if (!_isRunning && _restoreRetryCount < MaxRestoreRetries)
+                if (_isRunning)
+                {
+                    // 启动成功（failures 已在 Start() 中清零）
+                    _restoreRetryCount = 0;
+                }
+                else if (_restoreRetryCount < MaxRestoreRetries)
                 {
                     double delay = RestoreRetryDelays[_restoreRetryCount];
                     _restoreRetryCount++;
@@ -383,7 +514,13 @@ namespace UnitySkills
                 }
                 else
                 {
+                    // 本轮所有重试耗尽
                     _restoreRetryCount = 0;
+                    EditorPrefs.SetInt(PREF_CONSECUTIVE_FAILURES, failures + 1);
+                    EditorPrefs.SetString(PrefKey("LastFailTime"), EditorApplication.timeSinceStartup.ToString());
+                    SkillsLogger.LogError(
+                        $"[UnitySkills] Server failed to restart (consecutive failures: {failures + 1}/{MaxConsecutiveFailures}). " +
+                        "Will retry on next Domain Reload. Manual start: Window > UnitySkills > Start Server");
                 }
             }
             else
@@ -427,7 +564,7 @@ namespace UnitySkills
         {
             if (_isRunning)
             {
-                SkillsLogger.LogVerbose($"Server already running at {Url}");
+                SkillsLogger.LogVerbose($"Server already running at {_prefix}");
                 return;
             }
 
@@ -435,6 +572,8 @@ namespace UnitySkills
             {
                 HookUpdateLoop();
                 RefreshTimeoutCache();
+                // Cache keep-alive interval for thread-safe access from KeepAliveLoop
+                _cachedKeepAliveIntervalTicks = (long)KeepAliveIntervalSeconds * TimeSpan.TicksPerSecond;
 
                 // Port Hunting: 8090 -> 8100
                 int startPort = 8090;
@@ -446,7 +585,11 @@ namespace UnitySkills
                 {
                     try
                     {
-                        _listener = CreateAndStartListener(preferredPort);
+                        _listener = new HttpListener();
+                        _listener.Prefixes.Add($"{_prefixBase}{preferredPort}/");
+                        _listener.Prefixes.Add($"http://127.0.0.1:{preferredPort}/");
+                        _listener.Start();
+
                         _port = preferredPort;
                         started = true;
                     }
@@ -469,7 +612,11 @@ namespace UnitySkills
                     {
                         try
                         {
-                            _listener = CreateAndStartListener(p);
+                            _listener = new HttpListener();
+                            _listener.Prefixes.Add($"{_prefixBase}{p}/");
+                            _listener.Prefixes.Add($"http://127.0.0.1:{p}/");
+                            _listener.Start();
+
                             _port = p;
                             started = true;
                             break;
@@ -492,6 +639,7 @@ namespace UnitySkills
 
                 // Persist state for Domain Reload recovery
                 EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, true);
+                EditorPrefs.SetInt(PREF_CONSECUTIVE_FAILURES, 0); // 成功启动，清除失败计数
 
                 // Register to global registry
                 RegistryService.Register(_port);
@@ -506,18 +654,28 @@ namespace UnitySkills
 
                 // These calls are safe here because Start() is called from Main thread
                 var skillCount = SkillRouter.GetManifest().Split('\n').Length;
-                SkillsLogger.Log($"REST Server started at {Url}");
+                SkillsLogger.Log($"REST Server started at {_prefix}");
                 SkillsLogger.Log($"{skillCount} skills loaded | Instance: {RegistryService.InstanceId}");
                 SkillsLogger.LogVerbose($"Domain Reload Recovery: ENABLED (AutoStart={AutoStart})");
 
-                // Self-test: verify reachability after Start() returns
-                EditorApplication.delayCall += RunSelfTest;
+                // Initialize heartbeat timer so the first heartbeat doesn't fire immediately during startup
+                _lastHeartbeatTime = EditorApplication.timeSinceStartup;
+                _lastWatchdogCheck = EditorApplication.timeSinceStartup;
+
+                // Start diagnostic counter for self-test
+                _pjqTicksSinceStart = 0;
+
+                // Force an immediate update so ProcessJobQueue starts processing as soon as possible
+                EditorApplication.QueuePlayerLoopUpdate();
+
+                // Self-test: verify reachability after a short delay to let the update loop stabilize
+                ScheduleDelayedCall(1.5, RunSelfTest);
             }
             catch (Exception ex)
             {
                 SkillsLogger.LogError($"Failed to start: {ex.Message}");
                 _isRunning = false;
-                EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, false);
+                // 不清除 PREF_SERVER_SHOULD_RUN — 保留重启意图，下次 Reload 继续尝试
             }
         }
 
@@ -530,6 +688,7 @@ namespace UnitySkills
             if (permanent)
             {
                 EditorPrefs.SetBool(PREF_SERVER_SHOULD_RUN, false);
+                EditorPrefs.SetInt(PREF_CONSECUTIVE_FAILURES, 0);
             }
 
             // Unregister from global registry
@@ -588,7 +747,7 @@ namespace UnitySkills
                     {
                         hasPendingJobs = _jobQueue.Count > 0;
                     }
-                    
+
                     if (hasPendingJobs)
                     {
                         // Thread-safe call to wake up Unity's main thread
@@ -598,7 +757,7 @@ namespace UnitySkills
                     {
                         // No pending jobs: still wake up periodically so watchdog and heartbeat can run
                         long nowTicks = DateTime.UtcNow.Ticks;
-                        long intervalTicks = (long)KeepAliveIntervalSeconds * TimeSpan.TicksPerSecond;
+                        long intervalTicks = _cachedKeepAliveIntervalTicks;
                         if (nowTicks - _lastForceWakeTicks > intervalTicks)
                         {
                             _lastForceWakeTicks = nowTicks;
@@ -627,41 +786,43 @@ namespace UnitySkills
                     // Immediately capture raw data (no Unity API)
                     var request = context.Request;
                     string body = "";
+                    bool reservedPendingSlot = false;
+                    bool handedOffToResponder = false;
+
+                    if (!CheckAdmissionRateLimit())
+                    {
+                        SendImmediateJsonResponse(context, request, 429, new
+                        {
+                            error = "Rate limit exceeded",
+                            limit = MaxRequestsPerSecond,
+                            suggestion = "Please slow down requests"
+                        });
+                        continue;
+                    }
+
+                    reservedPendingSlot = TryReservePendingSlot();
+                    if (!reservedPendingSlot)
+                    {
+                        SendImmediateJsonResponse(context, request, 503, new
+                        {
+                            error = "Too many pending requests",
+                            pendingLimit = MaxPendingRequests,
+                            suggestion = "Please retry after current requests complete"
+                        });
+                        continue;
+                    }
                     
                     if (request.HttpMethod == "POST" && request.ContentLength64 > 0)
                     {
                         if (request.ContentLength64 > MaxBodySizeBytes)
                         {
-                            // Reject oversized request immediately
-                            ManualResetEventSlim rejectSignal = null;
-                            try
+                            ReleasePendingSlot();
+                            SendImmediateJsonResponse(context, request, 413, new
                             {
-                                rejectSignal = new ManualResetEventSlim(true); // Already signaled
-                                var rejectJob = new RequestJob
-                                {
-                                    Context = context,
-                                    HttpMethod = request.HttpMethod,
-                                    Path = request.Url.AbsolutePath,
-                                    Body = "",
-                                    EnqueueTimeTicks = DateTime.UtcNow.Ticks,
-                                    RequestId = $"req_{Interlocked.Increment(ref _requestIdCounter):X8}",
-                                    AgentId = DetectAgent(request),
-                                    StatusCode = 413,
-                                    ResponseJson = JsonConvert.SerializeObject(new {
-                                        error = "Request body too large",
-                                        maxSizeBytes = MaxBodySizeBytes,
-                                        receivedBytes = request.ContentLength64
-                                    }, _jsonSettings),
-                                    IsProcessed = true,
-                                    CompletionSignal = rejectSignal
-                                };
-                                ThreadPool.QueueUserWorkItem(_ => WaitAndRespond(rejectJob));
-                                rejectSignal = null; // Ownership transferred
-                            }
-                            finally
-                            {
-                                rejectSignal?.Dispose();
-                            }
+                                error = "Request body too large",
+                                maxSizeBytes = MaxBodySizeBytes,
+                                receivedBytes = request.ContentLength64
+                            });
                             continue;
                         }
 
@@ -671,43 +832,53 @@ namespace UnitySkills
                         }
                     }
                     
-                    ManualResetEventSlim signal = null;
+                    RequestJob job = null;
                     try
                     {
-                        signal = new ManualResetEventSlim(false);
-
-                        // Create job with raw data only - use DateTime (thread-safe) instead of Unity time
-                        var job = new RequestJob
-                        {
-                            Context = context,
-                            HttpMethod = request.HttpMethod,
-                            Path = request.Url.AbsolutePath,
-                            Body = body,
-                            EnqueueTimeTicks = DateTime.UtcNow.Ticks,
-                            RequestId = $"req_{Interlocked.Increment(ref _requestIdCounter):X8}",
-                            AgentId = DetectAgent(request),
-                            StatusCode = 200,
-                            ResponseJson = null,
-                            IsProcessed = false,
-                            CompletionSignal = signal
-                        };
+                        job = RentRequestJob();
+                        job.Prepare(
+                            context,
+                            request.HttpMethod,
+                            request.Url.AbsolutePath,
+                            body,
+                            $"req_{Interlocked.Increment(ref _requestIdCounter):X8}",
+                            DetectAgent(request),
+                            request.Url.Query);
 
                         Interlocked.Increment(ref _totalRequestsReceived);
 
                         // Enqueue for main thread processing
                         lock (_queueLock)
                         {
-                            _jobQueue.Enqueue(job);
+                            if (_jobQueue.Count >= MaxQueuedRequests)
+                            {
+                                job.StatusCode = 503;
+                                job.ResponseJson = JsonConvert.SerializeObject(new
+                                {
+                                    error = "Request queue is full",
+                                    queueLimit = MaxQueuedRequests,
+                                    suggestion = "Please retry after current requests complete"
+                                }, _jsonSettings);
+                                job.IsProcessed = true;
+                                job.CompletionSignal.Set();
+                            }
+                            else
+                            {
+                                _jobQueue.Enqueue(job);
+                            }
                         }
 
-                        // Wait for main thread to process (with timeout)
-                        // This is thread-safe - just waiting on a signal
-                        ThreadPool.QueueUserWorkItem(_ => WaitAndRespond(job));
-                        signal = null; // Ownership transferred to WaitAndRespond
+                        // Queue the responder with an explicit state object to avoid closure-capture races.
+                        ThreadPool.QueueUserWorkItem(WaitAndRespondCallback, job);
+                        handedOffToResponder = true;
+                        job = null; // Prevent finally from returning to pool (ownership transferred to WaitAndRespond)
                     }
                     finally
                     {
-                        signal?.Dispose(); // Only disposes if WaitAndRespond was never queued
+                        if (reservedPendingSlot && !handedOffToResponder)
+                            ReleasePendingSlot();
+                        if (job != null)
+                            ReturnRequestJob(job);
                     }
                 }
                 catch (HttpListenerException)
@@ -728,24 +899,55 @@ namespace UnitySkills
         /// Waits for job completion and sends HTTP response.
         /// Runs on ThreadPool thread - NO Unity API calls.
         /// </summary>
+        private static void WaitAndRespondCallback(object state)
+        {
+            if (state is RequestJob job)
+            {
+                WaitAndRespond(job);
+                return;
+            }
+
+            SkillsLogger.LogWarning("WaitAndRespond callback received invalid state.");
+        }
+
         private static void WaitAndRespond(RequestJob job)
         {
+            if (job == null)
+            {
+                SkillsLogger.LogWarning("WaitAndRespond received a null request job.");
+                return;
+            }
+
+            bool completed = false;
             try
             {
                 // Wait for main thread to process (with timeout)
-                bool completed = job.CompletionSignal.Wait(RequestTimeoutMs);
+                completed = job.CompletionSignal.Wait(RequestTimeoutMs);
                 
                 if (!completed)
                 {
                     job.StatusCode = 504;
                     job.ResponseJson = JsonConvert.SerializeObject(new {
                         error = $"Gateway Timeout: Main thread did not respond within {RequestTimeoutMs / 1000} seconds",
-                        suggestion = "Unity Editor may be paused or showing a modal dialog"
+                        diagnostics = new {
+                            domainReloadPending = _domainReloadPending,
+                            queuedRequests = QueuedRequests,
+                            listenerAlive = _listenerThread?.IsAlive ?? false,
+                            keepAliveAlive = _keepAliveThread?.IsAlive ?? false,
+                        },
+                        suggestion = _domainReloadPending
+                            ? "Unity is reloading scripts. Wait a few seconds and retry."
+                            : "Unity Editor may be paused, showing a modal dialog, or processing a long operation. " +
+                              "Please check the Unity Editor window for any dialogs or errors.",
+                        manualAction = "If the server is unresponsive, restart via: Window > UnitySkills > Start Server",
+                        retryAfterSeconds = _domainReloadPending ? 5 : 10,
+                        retryStrategy = "wait_and_retry"
                     }, _jsonSettings);
                 }
                 
                 // Send HTTP response (thread-safe)
                 SendResponse(job);
+                job.ResponseDispatched = true;
             }
             catch (Exception)
             {
@@ -755,12 +957,14 @@ namespace UnitySkills
                     job.StatusCode = 500;
                     job.ResponseJson = JsonConvert.SerializeObject(new { error = "Internal server error" }, _jsonSettings);
                     SendResponse(job);
+                    job.ResponseDispatched = true;
                 }
                 catch { }
             }
             finally
             {
-                job.CompletionSignal?.Dispose();
+                ReleasePendingSlot();
+                ReturnRequestJob(job);
             }
         }
         
@@ -775,9 +979,9 @@ namespace UnitySkills
                 response = job.Context.Response;
 
                 // CORS headers
-                response.Headers.Add("Access-Control-Allow-Origin", "*");
                 response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
                 response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, X-Agent-Id");
+                response.Headers.Add("Access-Control-Allow-Origin", "*");
                 response.Headers.Add("X-Request-Id", job.RequestId);
                 response.Headers.Add("X-Agent-Id", job.AgentId);
 
@@ -804,6 +1008,11 @@ namespace UnitySkills
         /// </summary>
         private static void ProcessJobQueue()
         {
+            // Startup diagnostic counter (lightweight volatile increment, stops at 10000)
+            var diagTick = _pjqTicksSinceStart;
+            if (diagTick >= 0 && diagTick < 10000)
+                _pjqTicksSinceStart = diagTick + 1;
+
             int processed = 0;
             const int maxPerFrame = 20; // Process more per frame for high throughput
             
@@ -841,14 +1050,15 @@ namespace UnitySkills
                     Interlocked.Increment(ref _totalRequestsProcessed);
                     GameObjectFinder.InvalidateCache();
                 }
-                
+
                 processed++;
             }
-            
+
+            double now = EditorApplication.timeSinceStartup;
+
             // Heartbeat for Registry
             if (_isRunning)
             {
-                double now = EditorApplication.timeSinceStartup;
                 if (now - _lastHeartbeatTime > HeartbeatInterval)
                 {
                     _lastHeartbeatTime = now;
@@ -869,13 +1079,40 @@ namespace UnitySkills
                         Stop();
                         Start(port, fallbackToAuto: true);
                     }
+                    else
+                    {
+                        bool keepAliveDead = _keepAliveThread == null || !_keepAliveThread.IsAlive;
+                        if (keepAliveDead)
+                        {
+                            SkillsLogger.LogWarning("Watchdog: keep-alive thread died, restarting...");
+                            _keepAliveThread = new Thread(KeepAliveLoop) { IsBackground = true, Name = "UnitySkills-KeepAlive" };
+                            _keepAliveThread.Start();
+                        }
+                    }
+                }
+            }
+
+            // Safety net: recover server after Domain Reload if delayCall failed to fire
+            if (!_isRunning && !_domainReloadPending)
+            {
+                if (now - _lastSafetyNetCheck > SafetyNetInterval)
+                {
+                    _lastSafetyNetCheck = now;
+                    bool shouldRun = EditorPrefs.GetBool(PREF_SERVER_SHOULD_RUN, false);
+                    if (shouldRun && AutoStart)
+                    {
+                        int failures = EditorPrefs.GetInt(PREF_CONSECUTIVE_FAILURES, 0);
+                        if (failures < MaxConsecutiveFailures)
+                        {
+                            SkillsLogger.Log("[SafetyNet] Server should be running but isn't — attempting recovery...");
+                            int lastPort = EditorPrefs.GetInt(PREF_LAST_PORT, 0);
+                            int restorePort = (lastPort >= 8090 && lastPort <= 8100) ? lastPort : PreferredPort;
+                            Start(restorePort, fallbackToAuto: true);
+                        }
+                    }
                 }
             }
         }
-
-        /// <summary>
-        /// Processes a single job. Runs on MAIN THREAD - all Unity API safe.
-        /// </summary>
         private static void ProcessJob(RequestJob job)
         {
             // Handle OPTIONS (CORS preflight)
@@ -906,30 +1143,67 @@ namespace UnitySkills
                     requestTimeoutMinutes = RequestTimeoutMinutes,
                     domainReloadRecovery = "enabled",
                     architecture = "Producer-Consumer (Thread-Safe)",
+                    threads = new {
+                        listenerAlive = _listenerThread?.IsAlive ?? false,
+                        keepAliveAlive = _keepAliveThread?.IsAlive ?? false,
+                    },
+                    compilation = new {
+                        isCompiling = EditorApplication.isCompiling,
+                        isUpdating = EditorApplication.isUpdating,
+                        domainReloadPending = _domainReloadPending,
+                    },
+                    queueStats = new {
+                        queued = QueuedRequests,
+                        totalReceived = _totalRequestsReceived,
+                    },
                     note = "If you get 'Connection Refused', Unity may be reloading scripts. Wait 2-3 seconds and retry."
                 }, _jsonSettings);
                 return;
             }
             
-            // Get skills manifest
+            // Get skills manifest (with optional filtering)
             if (path == "/skills" && job.HttpMethod == "GET")
             {
                 job.StatusCode = 200;
-                job.ResponseJson = SkillRouter.GetManifest();
+                job.ResponseJson = string.IsNullOrEmpty(job.QueryString)
+                    ? SkillRouter.GetManifest()
+                    : SkillRouter.GetFilteredManifest(job.QueryString);
+                return;
+            }
+
+            // Skill recommendation by intent
+            if (path == "/skills/recommend" && job.HttpMethod == "GET")
+            {
+                job.StatusCode = 200;
+                job.ResponseJson = SkillRouter.GetRecommendations(job.QueryString);
+                return;
+            }
+
+            // Skill dependency chain
+            if (path == "/skills/chain" && job.HttpMethod == "GET")
+            {
+                job.StatusCode = 200;
+                job.ResponseJson = SkillRouter.GetSkillChain(job.QueryString);
                 return;
             }
             
             // Execute skill
             if (path.StartsWith("/skill/") && job.HttpMethod == "POST")
             {
-                // Rate limiting (now safe - on main thread)
-                if (!CheckRateLimit())
+                if (_domainReloadPending || ServerAvailabilityHelper.IsCompilationInProgress())
                 {
-                    job.StatusCode = 429;
+                    job.StatusCode = 503;
                     job.ResponseJson = JsonConvert.SerializeObject(new {
-                        error = "Rate limit exceeded",
-                        limit = MaxRequestsPerSecond,
-                        suggestion = "Please slow down requests"
+                        error = "Unity is compiling or reloading scripts",
+                        diagnostics = new {
+                            isCompiling = EditorApplication.isCompiling,
+                            isUpdating = EditorApplication.isUpdating,
+                            domainReloadPending = _domainReloadPending,
+                        },
+                        suggestion = "The REST server is temporarily unavailable during compilation. Wait a few seconds and retry.",
+                        manualAction = "If this persists, check Unity Editor for compilation errors or stuck dialogs.",
+                        retryAfterSeconds = _domainReloadPending ? 8 : 5,
+                        retryStrategy = "wait_and_retry"
                     }, _jsonSettings);
                     return;
                 }
@@ -943,6 +1217,15 @@ namespace UnitySkills
                     return;
                 }
                 
+                // Dry-run mode: validate parameters without executing
+                var skillQs = SkillRouter.ParseQueryString(job.QueryString);
+                if (skillQs.TryGetValue("dryRun", out var dryRunVal) && dryRunVal.Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    job.StatusCode = 200;
+                    job.ResponseJson = SkillRouter.DryRun(skillName, job.Body);
+                    return;
+                }
+
                 // Execute skill (safe - on main thread)
                 try
                 {
@@ -969,59 +1252,84 @@ namespace UnitySkills
             job.StatusCode = 404;
             job.ResponseJson = JsonConvert.SerializeObject(new {
                 error = "Not found",
-                endpoints = new[] { "GET /skills", "POST /skill/{name}", "GET /health" }
+                endpoints = new[] { "GET /skills", "GET /skills/recommend", "GET /skills/chain", "POST /skill/{name}", "POST /skill/{name}?dryRun=true", "GET /health" }
             }, _jsonSettings);
-        }
-
-        /// <summary>
-        /// Rate limiting check. MUST be called from main thread only.
-        /// Uses DateTime for consistent timing (NOT EditorApplication.timeSinceStartup).
-        /// </summary>
-        private static bool CheckRateLimit()
-        {
-            long now = DateTime.UtcNow.Ticks;
-
-            if (now - _lastRateLimitResetTicks >= TimeSpan.TicksPerSecond)
-            {
-                _requestsThisSecond = 0;
-                _lastRateLimitResetTicks = now;
-            }
-
-            _requestsThisSecond++;
-            return _requestsThisSecond <= MaxRequestsPerSecond;
         }
 
         private static void RunSelfTest()
         {
             if (!_isRunning) return;
             int port = _port;
+            int pjqTicks = _pjqTicksSinceStart;
+            SkillsLogger.Log($"[Self-Test] Starting (ProcessJobQueue ticks={pjqTicks}, listener={_listener?.IsListening})");
+
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                // 1. Reachability test
-                var hosts = new List<string> { "localhost", "127.0.0.1" };
-                string serverIp = ServerIp;
-                if (serverIp != "0.0.0.0" && serverIp != "127.0.0.1")
-                    hosts.Insert(0, serverIp);
-
+                // 1. Reachability test with retry using raw TCP (bypasses .NET HTTP client stack entirely)
+                var hosts = new[] { "localhost", "127.0.0.1" };
                 foreach (var host in hosts)
                 {
+                    if (!_isRunning) return;
+
                     string url = $"http://{host}:{port}/health";
-                    try
+                    bool success = false;
+                    string lastError = null;
+                    var connectAddresses = GetSelfTestAddresses(host);
+
+                    for (int attempt = 1; attempt <= 3 && !success && _isRunning; attempt++)
                     {
-                        var req = (HttpWebRequest)WebRequest.Create(url);
-                        req.Timeout = 3000;
-                        using (var resp = (HttpWebResponse)req.GetResponse())
+                        if (attempt > 1) Thread.Sleep(attempt * 1500); // 3s, 4.5s backoff
+
+                        foreach (var address in connectAddresses)
                         {
-                            if (resp.StatusCode == HttpStatusCode.OK)
-                                SkillsLogger.LogSuccess($"[Self-Test] {url} -> OK");
-                            else
-                                SkillsLogger.LogWarning($"[Self-Test] {url} -> HTTP {(int)resp.StatusCode}");
+                            if (!_isRunning)
+                                return;
+
+                            try
+                            {
+                                if (!TryReadSelfTestResponse(address, host, port, out string response, out string error))
+                                {
+                                    lastError = error;
+                                    continue;
+                                }
+
+                                if (response.Contains("200") && response.Contains("\"status\""))
+                                {
+                                    SkillsLogger.LogSuccess($"[Self-Test] {url} -> OK");
+                                    success = true;
+                                    break;
+                                }
+                                else if (response.Length > 0)
+                                {
+                                    var firstLine = response.Split('\n')[0].Trim();
+                                    // Retry localhost on other loopback addresses before logging a warning.
+                                    if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) &&
+                                        firstLine.IndexOf("400", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        lastError = $"{firstLine} via {address}";
+                                        continue;
+                                    }
+
+                                    SkillsLogger.LogWarning($"[Self-Test] {url} -> {firstLine}");
+                                    success = true;
+                                    break;
+                                }
+                                else
+                                {
+                                    lastError = $"Empty response via {address}";
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                lastError = $"{ex.InnerException?.Message ?? ex.Message} via {address}";
+                            }
                         }
                     }
-                    catch (Exception ex)
+
+                    if (!success)
                     {
-                        SkillsLogger.LogError($"[Self-Test] {url} -> FAILED: {ex.Message}");
-                        SkillsLogger.LogError($"[Self-Test] Check firewall/antivirus settings.");
+                        SkillsLogger.LogWarning($"[Self-Test] {url} -> FAILED after 3 attempts: {lastError}");
+                        SkillsLogger.LogWarning($"[Self-Test] Main thread may be busy (PJQ ticks={_pjqTicksSinceStart}). External clients can connect once editor is responsive.");
                     }
                 }
 
@@ -1029,18 +1337,18 @@ namespace UnitySkills
                 var occupied = new List<string>();
                 for (int p = 8090; p <= 8100; p++)
                 {
-                    if (p == port) continue; // skip our own port
+                    if (p == port) continue;
                     try
                     {
-                        var req = (HttpWebRequest)WebRequest.Create($"http://127.0.0.1:{p}/");
-                        req.Timeout = 500;
-                        using (req.GetResponse()) { }
-                        occupied.Add(p.ToString());
-                    }
-                    catch (WebException wex) when (wex.Response != null)
-                    {
-                        // Got an HTTP response (even if error) = port is occupied
-                        occupied.Add(p.ToString());
+                        using (var tcp = new System.Net.Sockets.TcpClient())
+                        {
+                            var ar = tcp.BeginConnect("127.0.0.1", p, null, null);
+                            if (ar.AsyncWaitHandle.WaitOne(500))
+                            {
+                                tcp.EndConnect(ar);
+                                occupied.Add(p.ToString());
+                            }
+                        }
                     }
                     catch { /* Connection refused = port is free */ }
                 }
@@ -1048,5 +1356,95 @@ namespace UnitySkills
                     SkillsLogger.LogWarning($"[Self-Test] Occupied ports (8090-8100): {string.Join(", ", occupied)}");
             });
         }
+
+        private static List<IPAddress> GetSelfTestAddresses(string host)
+        {
+            var addresses = new List<IPAddress>();
+
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    foreach (var address in Dns.GetHostAddresses(host))
+                    {
+                        if (IPAddress.IsLoopback(address) && !addresses.Contains(address))
+                            addresses.Add(address);
+                    }
+                }
+                catch
+                {
+                    // Fall back to known loopback addresses below.
+                }
+
+                addresses.Sort((left, right) =>
+                {
+                    int leftRank = left.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 0 : 1;
+                    int rightRank = right.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 0 : 1;
+                    return leftRank.CompareTo(rightRank);
+                });
+
+                if (!addresses.Contains(IPAddress.Loopback))
+                    addresses.Insert(0, IPAddress.Loopback);
+                if (!addresses.Contains(IPAddress.IPv6Loopback))
+                    addresses.Add(IPAddress.IPv6Loopback);
+
+                return addresses;
+            }
+
+            if (IPAddress.TryParse(host, out var parsedAddress))
+            {
+                addresses.Add(parsedAddress);
+                return addresses;
+            }
+
+            foreach (var address in Dns.GetHostAddresses(host))
+            {
+                if (!addresses.Contains(address))
+                    addresses.Add(address);
+            }
+
+            return addresses;
+        }
+
+        private static bool TryReadSelfTestResponse(IPAddress address, string hostHeader, int port, out string response, out string error)
+        {
+            response = null;
+            error = null;
+
+            using (var tcp = new System.Net.Sockets.TcpClient(address.AddressFamily))
+            {
+                var ar = tcp.BeginConnect(address, port, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(3000))
+                {
+                    tcp.Close();
+                    error = "TCP connect timed out";
+                    return false;
+                }
+
+                tcp.EndConnect(ar);
+                tcp.ReceiveTimeout = 5000;
+                tcp.SendTimeout = 2000;
+
+                var stream = tcp.GetStream();
+                var httpReq =
+                    $"GET /health HTTP/1.1\r\n" +
+                    $"Host: {hostHeader}:{port}\r\n" +
+                    "User-Agent: UnitySkills-SelfTest\r\n" +
+                    "Accept: application/json\r\n" +
+                    "Connection: close\r\n\r\n";
+                var reqBytes = Encoding.ASCII.GetBytes(httpReq);
+                stream.Write(reqBytes, 0, reqBytes.Length);
+
+                var sb = new StringBuilder();
+                var buf = new byte[4096];
+                int read;
+                while ((read = stream.Read(buf, 0, buf.Length)) > 0)
+                    sb.Append(Encoding.UTF8.GetString(buf, 0, read));
+
+                response = sb.ToString();
+                return true;
+            }
+        }
     }
 }
+

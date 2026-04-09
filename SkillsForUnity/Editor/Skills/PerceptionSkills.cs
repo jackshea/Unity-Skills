@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.Compilation;
 using System;
 using System.IO;
 using System.Linq;
@@ -14,6 +15,22 @@ namespace UnitySkills
     /// </summary>
     public static class PerceptionSkills
     {
+        private sealed class CodeDependencyScriptInfo
+        {
+            public string Path;
+            public string ClassName;
+        }
+
+        private sealed class CodeDependencyCache
+        {
+            public readonly HashSet<string> UserClassNames = new HashSet<string>();
+            public readonly List<CodeDependencyScriptInfo> Scripts = new List<CodeDependencyScriptInfo>();
+            public List<DependencyEdge> AllEdges;
+        }
+
+        private static CodeDependencyCache _codeDependencyCache;
+        private static bool _codeDependencyCacheDirty = true;
+
         private static readonly HashSet<string> UnityCallbacks = new HashSet<string>
         {
             "Awake", "Start", "Update", "FixedUpdate", "LateUpdate",
@@ -32,14 +49,31 @@ namespace UnitySkills
             "OnWillRenderObject", "OnRenderImage"
         };
 
-        [UnitySkill("scene_summarize", "Get a structured summary of the current scene (object counts, component stats, hierarchy depth)")]
+        static PerceptionSkills()
+        {
+            EditorApplication.projectChanged += InvalidateCodeDependencyCache;
+            CompilationPipeline.compilationFinished += _ => InvalidateCodeDependencyCache();
+        }
+
+        private static void InvalidateCodeDependencyCache()
+        {
+            _codeDependencyCache = null;
+            _codeDependencyCacheDirty = true;
+        }
+
+        [UnitySkill("scene_summarize", "Get a structured summary of the current scene (object counts, component stats, hierarchy depth)",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "scene", "summary", "statistics", "overview" },
+            Outputs = new[] { "sceneName", "scenePath", "stats", "topComponents" },
+            ReadOnly = true)]
         public static object SceneSummarize(bool includeComponentStats = true, int topComponentsLimit = 10)
         {
             var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            var allObjects = GameObjectFinder.GetSceneObjects();
             var rootObjects = scene.GetRootGameObjects();
+            var componentBuffer = new List<Component>(8);
 
-            int totalObjects = allObjects.Length;
+            int totalObjects = allObjects.Count;
             int activeObjects = 0;
             int maxDepth = 0;
             int lightCount = 0, cameraCount = 0, canvasCount = 0;
@@ -49,14 +83,14 @@ namespace UnitySkills
             {
                 if (go.activeInHierarchy) activeObjects++;
 
-                // Calculate depth
-                int depth = 0;
-                var t = go.transform;
-                while (t.parent != null) { depth++; t = t.parent; }
+                // Get depth from the request-level hierarchy cache.
+                int depth = GameObjectFinder.GetDepth(go);
                 if (depth > maxDepth) maxDepth = depth;
 
                 // Count components in single pass
-                foreach (var comp in go.GetComponents<Component>())
+                componentBuffer.Clear();
+                go.GetComponents(componentBuffer);
+                foreach (var comp in componentBuffer)
                 {
                     if (comp == null) continue;
                     var typeName = comp.GetType().Name;
@@ -79,8 +113,8 @@ namespace UnitySkills
             var topComponents = componentCounts
                 .OrderByDescending(kv => kv.Value)
                 .Take(topComponentsLimit)
-                .Select(kv => new { component = kv.Key, count = kv.Value })
-                .ToList();
+                .Select(kv => (object)new { component = kv.Key, count = kv.Value })
+                .ToArray();
 
             return new
             {
@@ -103,7 +137,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("hierarchy_describe", "Get a text tree of the scene hierarchy (like 'tree' command). Returns human-readable text. For JSON structure use scene_get_hierarchy.")]
+        [UnitySkill("hierarchy_describe", "Get a text tree of the scene hierarchy (like 'tree' command). Returns human-readable text. For JSON structure use scene_get_hierarchy.",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Query,
+            Tags = new[] { "hierarchy", "tree", "scene", "structure" },
+            Outputs = new[] { "sceneName", "hierarchy", "totalObjectsShown" },
+            ReadOnly = true)]
         public static object HierarchyDescribe(int maxDepth = 5, bool includeInactive = false, int maxItemsPerLevel = 20)
         {
             var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
@@ -118,9 +156,10 @@ namespace UnitySkills
             sb.AppendLine("─".PadRight(40, '─'));
 
             int totalShown = 0;
+            var componentBuffer = new List<Component>(8);
             foreach (var root in rootObjects)
             {
-                BuildHierarchyTree(sb, root.transform, 0, maxDepth, includeInactive, maxItemsPerLevel, ref totalShown);
+                BuildHierarchyTree(sb, root.transform, 0, maxDepth, includeInactive, maxItemsPerLevel, ref totalShown, componentBuffer);
             }
 
             var allRoots = scene.GetRootGameObjects();
@@ -138,7 +177,7 @@ namespace UnitySkills
             };
         }
 
-        private static void BuildHierarchyTree(StringBuilder sb, Transform t, int depth, int maxDepth, bool includeInactive, int maxItems, ref int total)
+        private static void BuildHierarchyTree(StringBuilder sb, Transform t, int depth, int maxDepth, bool includeInactive, int maxItems, ref int total, List<Component> componentBuffer)
         {
             if (depth > maxDepth) return;
             if (!includeInactive && !t.gameObject.activeInHierarchy) return;
@@ -147,7 +186,7 @@ namespace UnitySkills
             string indent = new string(' ', depth * 2);
             string prefix = depth == 0 ? "► " : "├─";
             string activeMarker = t.gameObject.activeSelf ? "" : " [inactive]";
-            string componentHint = GetComponentHint(t);
+            string componentHint = GetComponentHint(t.gameObject, componentBuffer);
 
             sb.AppendLine($"{indent}{prefix} {t.name}{componentHint}{activeMarker}");
 
@@ -159,12 +198,67 @@ namespace UnitySkills
                     sb.AppendLine($"{indent}  ... and {t.childCount - childrenShown} more children");
                     break;
                 }
-                BuildHierarchyTree(sb, child, depth + 1, maxDepth, includeInactive, maxItems, ref total);
+                BuildHierarchyTree(sb, child, depth + 1, maxDepth, includeInactive, maxItems, ref total, componentBuffer);
                 childrenShown++;
             }
         }
 
-        private static string GetComponentHint(Transform t)
+        private static string GetComponentHint(GameObject go, List<Component> componentBuffer)
+        {
+            componentBuffer.Clear();
+            go.GetComponents(componentBuffer);
+
+            bool hasCamera = false;
+            bool hasLight = false;
+            bool hasCanvas = false;
+            bool hasButton = false;
+            bool hasAnimator = false;
+            bool hasAudioSource = false;
+            bool hasParticleSystem = false;
+            bool hasCollider = false;
+            bool hasRigidbody = false;
+            bool hasSkinnedMeshRenderer = false;
+            bool hasMeshRenderer = false;
+            bool hasSpriteRenderer = false;
+            bool hasUiGraphic = false;
+
+            foreach (var component in componentBuffer)
+            {
+                if (component == null)
+                    continue;
+
+                if (component is Camera) hasCamera = true;
+                else if (component is Light) hasLight = true;
+                else if (component is Canvas) hasCanvas = true;
+                else if (component is UnityEngine.UI.Button) hasButton = true;
+                else if (component is Animator) hasAnimator = true;
+                else if (component is AudioSource) hasAudioSource = true;
+                else if (component is ParticleSystem) hasParticleSystem = true;
+                else if (component is Collider || component is Collider2D) hasCollider = true;
+                else if (component is Rigidbody || component is Rigidbody2D) hasRigidbody = true;
+                else if (component is SkinnedMeshRenderer) hasSkinnedMeshRenderer = true;
+                else if (component is MeshRenderer) hasMeshRenderer = true;
+                else if (component is SpriteRenderer) hasSpriteRenderer = true;
+                else if (component is UnityEngine.UI.Text || component is UnityEngine.UI.Image) hasUiGraphic = true;
+            }
+
+            if (hasCamera) return " [Camera]";
+            if (hasLight) return " [Light]";
+            if (hasCanvas) return " [Canvas]";
+            if (hasButton) return " [Button]";
+            if (hasAnimator) return " [Animator]";
+            if (hasAudioSource) return " [AudioSource]";
+            if (hasParticleSystem) return " [ParticleSystem]";
+            if (hasCollider) return " [Collider]";
+            if (hasRigidbody) return " [Rigidbody]";
+            if (hasSkinnedMeshRenderer) return " [SkinnedMeshRenderer]";
+            if (hasMeshRenderer) return " [MeshRenderer]";
+            if (hasSpriteRenderer) return " [SpriteRenderer]";
+            if (hasUiGraphic) return " [UI]";
+            return "";
+        }
+
+        private static string GetComponentHintLegacy(Transform t)
         {
             if (t.GetComponent<Camera>()) return " 📷";
             if (t.GetComponent<Light>()) return " 💡";
@@ -182,7 +276,12 @@ namespace UnitySkills
             return "";
         }
 
-        [UnitySkill("script_analyze", "Analyze a script's public API (MonoBehaviour, ScriptableObject, or plain class)")]
+        [UnitySkill("script_analyze", "Analyze a script's public API (MonoBehaviour, ScriptableObject, or plain class)",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "script", "analyze", "api", "reflection" },
+            Outputs = new[] { "script", "fullName", "kind", "fields", "properties", "methods", "unityCallbacks" },
+            RequiresInput = new[] { "scriptName" },
+            ReadOnly = true)]
         public static object ScriptAnalyze(string scriptName, bool includePrivate = false)
         {
             var type = AppDomain.CurrentDomain.GetAssemblies()
@@ -259,7 +358,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("scene_spatial_query", "Find objects within a radius of a point, or near another object")]
+        [UnitySkill("scene_spatial_query", "Find objects within a radius of a point, or near another object",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Query,
+            Tags = new[] { "spatial", "radius", "proximity", "search" },
+            Outputs = new[] { "center", "radius", "totalFound", "results" },
+            ReadOnly = true)]
         public static object SceneSpatialQuery(
             float x = 0, float y = 0, float z = 0,
             float radius = 10f,
@@ -281,17 +384,12 @@ namespace UnitySkills
                 center = new Vector3(x, y, z);
             }
 
-            var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            var allObjects = GameObjectFinder.GetSceneObjects();
             float radiusSq = radius * radius;
 
-            Type filterType = null;
-            if (!string.IsNullOrEmpty(componentFilter))
-            {
-                filterType = AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
-                    .FirstOrDefault(t => t.Name.Equals(componentFilter, StringComparison.OrdinalIgnoreCase) &&
-                                         typeof(Component).IsAssignableFrom(t));
-            }
+            Type filterType = string.IsNullOrEmpty(componentFilter)
+                ? null
+                : ComponentSkills.FindComponentType(componentFilter);
 
             var found = new List<(float dist, object info)>();
             foreach (var go in allObjects)
@@ -306,7 +404,7 @@ namespace UnitySkills
                     found.Add((dist, new
                     {
                         name = go.name,
-                        path = GameObjectFinder.GetPath(go),
+                        path = GameObjectFinder.GetCachedPath(go),
                         distance = dist,
                         position = new { x = pos.x, y = pos.y, z = pos.z }
                     }));
@@ -327,10 +425,14 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("scene_materials", "Get an overview of all materials and shaders used in the current scene")]
+        [UnitySkill("scene_materials", "Get an overview of all materials and shaders used in the current scene",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Query,
+            Tags = new[] { "material", "shader", "scene", "overview" },
+            Outputs = new[] { "totalMaterials", "totalShaders", "shaders" },
+            ReadOnly = true)]
         public static object SceneMaterials(bool includeProperties = false)
         {
-            var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
+            var renderers = FindHelper.FindAll<Renderer>();
             var materialMap = new Dictionary<string, MaterialInfo>();
 
             foreach (var renderer in renderers)
@@ -403,16 +505,22 @@ namespace UnitySkills
             public List<object> properties;
         }
 
-        [UnitySkill("scene_context", "Generate a comprehensive scene snapshot for AI coding assistance (hierarchy, components, script fields, references, UI layout). Best for initial context gathering before editing code or complex scene work.")]
+        [UnitySkill("scene_context", "Generate a comprehensive scene snapshot for AI coding assistance (hierarchy, components, script fields, references, UI layout). Best for initial context gathering before editing code or complex scene work.",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "scene", "context", "snapshot", "comprehensive", "ai" },
+            Outputs = new[] { "sceneName", "totalObjects", "exportedObjects", "objects", "references", "codeDependencies" },
+            ReadOnly = true)]
         public static object SceneContext(
             int maxDepth = 10,
             int maxObjects = 200,
             string rootPath = null,
             bool includeValues = false,
-            bool includeReferences = true)
+            bool includeReferences = true,
+            bool includeCodeDeps = false)
         {
             var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            var totalObjects = UnityEngine.Object.FindObjectsOfType<GameObject>().Length;
+            var totalObjects = GameObjectFinder.GetSceneObjects().Count;
+            int scopeObjects;
 
             // Determine roots
             Transform[] roots;
@@ -422,22 +530,26 @@ namespace UnitySkills
                 if (rootGo == null)
                     return new { success = false, error = $"Root path '{rootPath}' not found" };
                 roots = new[] { rootGo.transform };
+                scopeObjects = CountSubtreeObjects(rootGo.transform);
             }
             else
             {
                 roots = scene.GetRootGameObjects().Select(g => g.transform).ToArray();
+                scopeObjects = totalObjects;
             }
 
             // BFS traversal
             var objects = new List<object>();
             var references = new List<object>();
             var queue = new Queue<(Transform t, int depth)>();
+            var componentBuffer = new List<Component>(8);
+            var relevantUserScripts = includeCodeDeps ? new HashSet<string>() : null;
             foreach (var r in roots) queue.Enqueue((r, 0));
 
             while (queue.Count > 0 && objects.Count < maxObjects)
             {
                 var (t, depth) = queue.Dequeue();
-                objects.Add(BuildObjectInfo(t.gameObject, includeValues, includeReferences, references));
+                objects.Add(BuildObjectInfo(t.gameObject, includeValues, includeReferences, references, componentBuffer, relevantUserScripts));
 
                 if (depth + 1 <= maxDepth)
                 {
@@ -446,33 +558,52 @@ namespace UnitySkills
                 }
             }
 
+            // Optional: code-level dependencies
+            List<object> codeDeps = null;
+            if (includeCodeDeps)
+            {
+                codeDeps = CollectCodeDependencies(relevantUserScripts).Select(e => (object)new
+                {
+                    from = e.fromScript,
+                    to = e.toObject,
+                    type = e.fieldType,
+                    detail = e.fieldName
+                }).ToList();
+            }
+
             var result = new
             {
                 success = true,
                 sceneName = scene.name,
                 totalObjects,
+                scopeObjects,
                 exportedObjects = objects.Count,
-                truncated = objects.Count < totalObjects || queue.Count > 0,
+                truncated = objects.Count < scopeObjects || queue.Count > 0,
                 objects,
-                references = includeReferences ? references : null
+                references = includeReferences ? references : null,
+                codeDependencies = codeDeps
             };
             return result;
         }
 
-        private static object BuildObjectInfo(GameObject go, bool includeValues, bool includeReferences, List<object> refs)
+        private static object BuildObjectInfo(GameObject go, bool includeValues, bool includeReferences, List<object> refs, List<Component> componentBuffer, HashSet<string> relevantUserScripts = null)
         {
-            var path = GameObjectFinder.GetPath(go);
+            var path = GameObjectFinder.GetCachedPath(go);
             var components = new List<object>();
 
-            foreach (var comp in go.GetComponents<Component>())
+            componentBuffer.Clear();
+            go.GetComponents(componentBuffer);
+            foreach (var comp in componentBuffer)
             {
                 if (comp == null) continue;
+                if (relevantUserScripts != null && comp is MonoBehaviour mono && mono != null && IsUserScript(mono.GetType()))
+                    relevantUserScripts.Add(mono.GetType().Name);
                 components.Add(BuildComponentInfo(comp, path, includeValues, includeReferences, refs));
             }
 
             var children = new List<string>();
             foreach (Transform child in go.transform)
-                children.Add(GameObjectFinder.GetPath(child.gameObject));
+                children.Add(GameObjectFinder.GetCachedPath(child.gameObject));
 
             return new
             {
@@ -533,11 +664,7 @@ namespace UnitySkills
                 {
                     var refObj = prop.objectReferenceValue;
                     fieldType = refObj.GetType().Name;
-                    string refPath = null;
-                    if (refObj is GameObject refGo)
-                        refPath = GameObjectFinder.GetPath(refGo);
-                    else if (refObj is Component refComp)
-                        refPath = GameObjectFinder.GetPath(refComp.gameObject);
+                    string refPath = GetObjectReferencePath(refObj);
 
                     if (includeReferences && refPath != null)
                         refs.Add(new { from = $"{objPath}:{comp.GetType().Name}.{prop.name}", to = refPath });
@@ -681,7 +808,10 @@ namespace UnitySkills
             return null;
         }
 
-        [UnitySkill("scene_export_report", "Export complete scene structure and script dependency report as markdown file. Use when user asks to: export scene report, generate scene document, save scene overview, create scene context file")]
+        [UnitySkill("scene_export_report", "Export complete scene structure and script dependency report as markdown file. Use when user asks to: export scene report, generate scene document, save scene overview, create scene context file",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze | SkillOperation.Execute,
+            Tags = new[] { "scene", "report", "export", "markdown", "documentation" },
+            Outputs = new[] { "savedTo", "objectCount", "userScriptCount", "referenceCount" })]
         public static object SceneExportReport(
             string savePath = "Assets/Docs/SceneReport.md",
             int maxDepth = 10,
@@ -705,7 +835,9 @@ namespace UnitySkills
             }
 
             // Collect serialized reference edges
-            var allObjects = objList.Select(o => o.go).ToArray();
+            var allObjects = new GameObject[objList.Count];
+            for (int i = 0; i < objList.Count; i++)
+                allObjects[i] = objList[i].go;
             var edges = CollectDependencyEdges(allObjects);
 
             // Collect C# code-level dependencies
@@ -720,9 +852,22 @@ namespace UnitySkills
             var sb = new StringBuilder();
             sb.AppendLine($"# Scene Report: {scene.name}");
             int userScriptCount = 0;
+            var userMonos = new List<(string objPath, MonoBehaviour mb)>();
+            var componentBuffer = new List<Component>(8);
+            var componentNamesBuilder = new StringBuilder(64);
             foreach (var (go, _) in objList)
-                foreach (var c in go.GetComponents<MonoBehaviour>())
-                    if (c != null && IsUserScript(c.GetType())) userScriptCount++;
+            {
+                componentBuffer.Clear();
+                go.GetComponents(componentBuffer);
+                foreach (var component in componentBuffer)
+                {
+                    if (component is MonoBehaviour mono && mono != null && IsUserScript(mono.GetType()))
+                    {
+                        userScriptCount++;
+                        userMonos.Add((GameObjectFinder.GetCachedPath(go), mono));
+                    }
+                }
+            }
             sb.AppendLine($"> Generated: {DateTime.Now:yyyy-MM-dd HH:mm} | Objects: {objList.Count} | User Scripts: {userScriptCount} | References: {allEdges.Count}");
             sb.AppendLine();
 
@@ -732,21 +877,31 @@ namespace UnitySkills
             foreach (var (go, depth) in objList)
             {
                 var indent = new string(' ', depth * 2);
-                var comps = go.GetComponents<Component>()
-                    .Where(c => c != null && !(c is Transform))
-                    .Select(c => IsUserScript(c.GetType()) ? c.GetType().Name + "*" : c.GetType().Name);
-                var compStr = string.Join(", ", comps);
+                componentBuffer.Clear();
+                go.GetComponents(componentBuffer);
+                componentNamesBuilder.Clear();
+                bool isFirstComponent = true;
+                foreach (var component in componentBuffer)
+                {
+                    if (component == null || component is Transform)
+                        continue;
+
+                    var typeName = component.GetType().Name;
+                    if (component is MonoBehaviour mono && mono != null && IsUserScript(mono.GetType()))
+                        typeName += "*";
+
+                    if (!isFirstComponent)
+                        componentNamesBuilder.Append(", ");
+                    componentNamesBuilder.Append(typeName);
+                    isFirstComponent = false;
+                }
+
+                var compStr = componentNamesBuilder.ToString();
                 sb.AppendLine($"{indent}{go.name}{(compStr.Length > 0 ? $" [{compStr}]" : "")}");
             }
             sb.AppendLine();
 
             // Script Fields section — only user scripts, with values
-            var userMonos = new List<(string objPath, MonoBehaviour mb)>();
-            foreach (var (go, _) in objList)
-                foreach (var c in go.GetComponents<MonoBehaviour>())
-                    if (c != null && IsUserScript(c.GetType()))
-                        userMonos.Add((GameObjectFinder.GetPath(go), c));
-
             if (userMonos.Count > 0)
             {
                 sb.AppendLine("## Script Fields");
@@ -772,9 +927,7 @@ namespace UnitySkills
                             {
                                 var refObj = prop.objectReferenceValue;
                                 ft = refObj.GetType().Name;
-                                if (refObj is GameObject rg) val = GameObjectFinder.GetPath(rg);
-                                else if (refObj is Component rc) val = GameObjectFinder.GetPath(rc.gameObject);
-                                else val = refObj.name;
+                                val = GetObjectReferencePath(refObj) ?? refObj.name;
                             }
                             else val = "null";
                         }
@@ -819,7 +972,7 @@ namespace UnitySkills
             var dir = Path.GetDirectoryName(savePath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
-            File.WriteAllText(savePath, sb.ToString());
+            File.WriteAllText(savePath, sb.ToString(), new UTF8Encoding(false));
             AssetDatabase.ImportAsset(savePath);
 
             return new
@@ -865,9 +1018,34 @@ namespace UnitySkills
             }
         }
 
+        private static string GetObjectReferencePath(UnityEngine.Object referenceObject)
+        {
+            if (referenceObject is GameObject referenceGameObject)
+                return GameObjectFinder.GetCachedPath(referenceGameObject);
+            if (referenceObject is Component referenceComponent)
+                return GameObjectFinder.GetCachedPath(referenceComponent.gameObject);
+            return null;
+        }
+
+        private static int CountSubtreeObjects(Transform root)
+        {
+            int count = 0;
+            var stack = new Stack<Transform>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                count++;
+                foreach (Transform child in current)
+                    stack.Push(child);
+            }
+
+            return count;
+        }
+
         // Regex patterns for C# code-level dependency detection
         private static readonly System.Text.RegularExpressions.Regex RxGetComponent =
-            new System.Text.RegularExpressions.Regex(@"GetComponent(?:InChildren|InParent|s)?<(\w+)>", System.Text.RegularExpressions.RegexOptions.Compiled);
+            new System.Text.RegularExpressions.Regex(@"(?:Get|Add)Component(?:InChildren|InParent|s)?<(\w+)>", System.Text.RegularExpressions.RegexOptions.Compiled);
         private static readonly System.Text.RegularExpressions.Regex RxFindObject =
             new System.Text.RegularExpressions.Regex(@"FindObject(?:OfType|sOfType|sByType)?<(\w+)>", System.Text.RegularExpressions.RegexOptions.Compiled);
         private static readonly System.Text.RegularExpressions.Regex RxSendMessage =
@@ -893,7 +1071,7 @@ namespace UnitySkills
         private static readonly System.Text.RegularExpressions.Regex RxMethodDecl =
             new System.Text.RegularExpressions.Regex(@"(?:(?:public|private|protected|internal|static|virtual|override|abstract|async)\s+)*(?:void|bool|int|float|string|IEnumerator|object|[A-Z]\w*)\s+([A-Z]\w*)\s*\(", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-        private static List<DependencyEdge> CollectCodeDependencies()
+        private static List<DependencyEdge> CollectCodeDependenciesLegacy()
         {
             var edges = new List<DependencyEdge>();
             var scriptGuids = AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" });
@@ -918,7 +1096,7 @@ namespace UnitySkills
             foreach (var (path, className) in userScriptPaths)
             {
                 string rawSource;
-                try { rawSource = File.ReadAllText(path); } catch { continue; }
+                try { rawSource = File.ReadAllText(path, System.Text.Encoding.UTF8); } catch { continue; }
 
                 // Strip comments to avoid false positives (preserve string literals, keep char offsets)
                 var source = RxComment.Replace(rawSource, m => m.Groups[1].Success ? m.Value : new string(' ', m.Length));
@@ -990,6 +1168,172 @@ namespace UnitySkills
                 .Select(g => g.First()).ToList();
         }
 
+        private static CodeDependencyCache GetOrBuildCodeDependencyInventory()
+        {
+            if (_codeDependencyCache != null && !_codeDependencyCacheDirty)
+                return _codeDependencyCache;
+
+            var cache = new CodeDependencyCache();
+            var scriptGuids = AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" });
+            foreach (var guid in scriptGuids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var script = AssetDatabase.LoadAssetAtPath<MonoScript>(path);
+                if (script == null) continue;
+
+                var scriptClass = script.GetClass();
+                if (scriptClass == null || !IsUserScript(scriptClass))
+                    continue;
+
+                cache.UserClassNames.Add(scriptClass.Name);
+                cache.Scripts.Add(new CodeDependencyScriptInfo
+                {
+                    Path = path,
+                    ClassName = scriptClass.Name
+                });
+            }
+
+            _codeDependencyCache = cache;
+            _codeDependencyCacheDirty = false;
+            return cache;
+        }
+
+        private static List<DependencyEdge> CollectCodeDependencies()
+        {
+            var cache = GetOrBuildCodeDependencyInventory();
+            if (cache.UserClassNames.Count == 0)
+                return new List<DependencyEdge>();
+
+            if (cache.AllEdges == null)
+                cache.AllEdges = ParseCodeDependencies(cache.Scripts, cache.UserClassNames);
+
+            return cache.AllEdges;
+        }
+
+        private static List<DependencyEdge> CollectCodeDependencies(HashSet<string> relevantScriptNames)
+        {
+            if (relevantScriptNames == null || relevantScriptNames.Count == 0)
+                return new List<DependencyEdge>();
+
+            var cache = GetOrBuildCodeDependencyInventory();
+            if (cache.UserClassNames.Count == 0)
+                return new List<DependencyEdge>();
+
+            if (cache.AllEdges != null)
+                return FilterCodeDependencies(cache.AllEdges, relevantScriptNames);
+
+            var scopedScripts = cache.Scripts
+                .Where(script => relevantScriptNames.Contains(script.ClassName))
+                .ToList();
+
+            if (scopedScripts.Count == 0)
+                return new List<DependencyEdge>();
+
+            return ParseCodeDependencies(scopedScripts, cache.UserClassNames);
+        }
+
+        private static List<DependencyEdge> ParseCodeDependencies(
+            IReadOnlyList<CodeDependencyScriptInfo> scriptInfos,
+            HashSet<string> userClassNames)
+        {
+            var edges = new List<DependencyEdge>();
+            foreach (var scriptInfo in scriptInfos)
+            {
+                var path = scriptInfo.Path;
+                var className = scriptInfo.ClassName;
+                string rawSource;
+                try { rawSource = File.ReadAllText(path, System.Text.Encoding.UTF8); } catch { continue; }
+
+                var source = RxComment.Replace(rawSource, m => m.Groups[1].Success ? m.Value : new string(' ', m.Length));
+                var methodAtLine = BuildMethodIndex(source);
+
+                void AddEdge(string target, string pattern, string edgeType, int charIndex)
+                {
+                    if (target != className && userClassNames.Contains(target))
+                    {
+                        var method = GetMethodAtPos(source, charIndex, methodAtLine);
+                        var location = method != null ? $"{className}.{method}" : className;
+                        edges.Add(new DependencyEdge
+                        {
+                            fromObject = className,
+                            fromScript = location,
+                            fieldName = pattern,
+                            fieldType = edgeType,
+                            toObject = target,
+                            source = "code"
+                        });
+                    }
+                }
+
+                foreach (System.Text.RegularExpressions.Match m in RxGetComponent.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value, "GetComponent", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxFindObject.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value, "FindObject", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxSendMessage.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value, "Message", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxFieldRef.Matches(source))
+                    AddEdge(m.Groups[1].Value, $"field:{m.Groups[1].Value}", "FieldReference", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxSingleton.Matches(source))
+                    AddEdge(m.Groups[1].Value, $"{m.Groups[1].Value}.Instance", "Singleton", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxStaticAccess.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value.TrimEnd('(', ';', ',', ')').Trim(), "StaticAccess", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxNewInstance.Matches(source))
+                    AddEdge(m.Groups[1].Value, $"new {m.Groups[1].Value}()", "Instantiation", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match m in RxGenericArg.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value.TrimEnd('('), "GenericArg", m.Index);
+
+                foreach (System.Text.RegularExpressions.Match inhMatch in RxInheritance.Matches(source))
+                {
+                    var declaredClass = inhMatch.Groups[1].Value;
+                    foreach (var baseType in inhMatch.Groups[2].Value.Split(','))
+                    {
+                        var trimmed = baseType.Trim();
+                        if (trimmed != declaredClass && userClassNames.Contains(trimmed))
+                        {
+                            edges.Add(new DependencyEdge
+                            {
+                                fromObject = declaredClass,
+                                fromScript = declaredClass,
+                                fieldName = $"extends:{trimmed}",
+                                fieldType = "Inheritance",
+                                toObject = trimmed,
+                                source = "code"
+                            });
+                        }
+                    }
+                }
+
+                foreach (System.Text.RegularExpressions.Match m in RxTypeCheck.Matches(source))
+                    AddEdge(m.Groups[1].Value, m.Value.Trim(), "TypeCheck", m.Index);
+            }
+
+            return DeduplicateDependencyEdges(edges);
+        }
+
+        private static List<DependencyEdge> FilterCodeDependencies(
+            IReadOnlyList<DependencyEdge> edges,
+            HashSet<string> relevantScriptNames)
+        {
+            return DeduplicateDependencyEdges(edges.Where(edge =>
+                relevantScriptNames.Contains(edge.fromObject) ||
+                relevantScriptNames.Contains(edge.toObject)));
+        }
+
+        private static List<DependencyEdge> DeduplicateDependencyEdges(IEnumerable<DependencyEdge> edges)
+        {
+            return edges
+                .GroupBy(e => $"{e.fromScript}->{e.toObject}:{e.fieldName}:{e.fieldType}")
+                .Select(g => g.First())
+                .ToList();
+        }
+
         private static List<(int lineStart, string methodName)> BuildMethodIndex(string source)
         {
             var result = new List<(int lineStart, string methodName)>();
@@ -1010,13 +1354,16 @@ namespace UnitySkills
             return best;
         }
 
-        private static List<DependencyEdge> CollectDependencyEdges(GameObject[] allObjects)
+        private static List<DependencyEdge> CollectDependencyEdges(IReadOnlyList<GameObject> allObjects)
         {
-            var edges = new List<DependencyEdge>();
+            var edges = new List<DependencyEdge>(allObjects.Count);
+            var componentBuffer = new List<Component>(8);
             foreach (var go in allObjects)
             {
-                var objPath = GameObjectFinder.GetPath(go);
-                foreach (var comp in go.GetComponents<Component>())
+                var objPath = GameObjectFinder.GetCachedPath(go);
+                componentBuffer.Clear();
+                go.GetComponents(componentBuffer);
+                foreach (var comp in componentBuffer)
                 {
                     if (comp == null) continue;
                     var so = new SerializedObject(comp);
@@ -1030,10 +1377,7 @@ namespace UnitySkills
 
                         string refTarget = null;
                         var refObj = prop.objectReferenceValue;
-                        if (refObj is GameObject refGo)
-                            refTarget = GameObjectFinder.GetPath(refGo);
-                        else if (refObj is Component refComp)
-                            refTarget = GameObjectFinder.GetPath(refComp.gameObject);
+                        refTarget = GetObjectReferencePath(refObj);
                         if (refTarget == null || refTarget == objPath) continue;
 
                         edges.Add(new DependencyEdge
@@ -1051,7 +1395,11 @@ namespace UnitySkills
             return edges;
         }
 
-        [UnitySkill("scene_dependency_analyze", "Analyze object dependency graph and impact of changes. Use ONLY when user explicitly asks about: dependency analysis, impact analysis, what depends on, what references, safe to delete/disable/remove, refactoring impact, reference check")]
+        [UnitySkill("scene_dependency_analyze", "Analyze object dependency graph and impact of changes. Use ONLY when user explicitly asks about: dependency analysis, impact analysis, what depends on, what references, safe to delete/disable/remove, refactoring impact, reference check",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "dependency", "impact", "reference", "analysis", "graph" },
+            Outputs = new[] { "sceneName", "totalReferences", "objectsAnalyzed", "analysis", "markdown" },
+            ReadOnly = true)]
         public static object SceneDependencyAnalyze(
             string targetPath = null,
             string savePath = null)
@@ -1059,7 +1407,7 @@ namespace UnitySkills
             if (!string.IsNullOrEmpty(savePath) && Validate.SafePath(savePath, "savePath") is object pathErr) return pathErr;
 
             var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            var allObjects = GameObjectFinder.GetSceneObjects();
 
             var edges = CollectDependencyEdges(allObjects);
 
@@ -1082,7 +1430,7 @@ namespace UnitySkills
                 while (stack.Count > 0)
                 {
                     var t = stack.Pop();
-                    targetPaths.Add(GameObjectFinder.GetPath(t.gameObject));
+                    targetPaths.Add(GameObjectFinder.GetCachedPath(t.gameObject));
                     foreach (Transform child in t) stack.Push(child);
                 }
 
@@ -1105,7 +1453,7 @@ namespace UnitySkills
                 var dir = Path.GetDirectoryName(savePath);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
-                File.WriteAllText(savePath, md);
+                File.WriteAllText(savePath, md, new UTF8Encoding(false));
                 AssetDatabase.ImportAsset(savePath);
                 savedPath = savePath;
             }
@@ -1121,6 +1469,231 @@ namespace UnitySkills
                 savedTo = savedPath,
                 markdown = savedPath == null ? md : null
             };
+        }
+
+        [UnitySkill("script_dependency_graph",
+            "Given an entry script, return its N-hop dependency closure as structured JSON. "
+            + "Shows which scripts to read to understand or safely modify a feature.",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "script", "dependency", "graph", "closure", "analysis" },
+            Outputs = new[] { "entryScript", "totalScriptsReached", "scripts", "edges", "suggestedReadOrder" },
+            RequiresInput = new[] { "scriptName" },
+            ReadOnly = true)]
+        public static object ScriptDependencyGraph(
+            string scriptName,
+            int maxHops = 2,
+            bool includeDetails = true)
+        {
+            if (string.IsNullOrEmpty(scriptName))
+                return new { success = false, error = "scriptName is required" };
+
+            // Find the entry script type
+            var allTypes = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                .Where(t => t.IsClass && IsUserScript(t))
+                .ToList();
+
+            var entryType = allTypes.FirstOrDefault(t => t.Name.Equals(scriptName, StringComparison.OrdinalIgnoreCase));
+            if (entryType == null)
+                return new { success = false, error = $"Script '{scriptName}' not found among user scripts" };
+
+            var entryName = entryType.Name;
+
+            // Collect all code-level dependency edges
+            var codeEdges = CollectCodeDependencies();
+
+            // Build bidirectional adjacency: outgoing (A depends on B) and incoming (B is depended by A)
+            var outgoing = new Dictionary<string, HashSet<string>>();
+            var incoming = new Dictionary<string, HashSet<string>>();
+
+            foreach (var e in codeEdges)
+            {
+                if (!outgoing.ContainsKey(e.fromObject)) outgoing[e.fromObject] = new HashSet<string>();
+                outgoing[e.fromObject].Add(e.toObject);
+
+                if (!incoming.ContainsKey(e.toObject)) incoming[e.toObject] = new HashSet<string>();
+                incoming[e.toObject].Add(e.fromObject);
+            }
+
+            // BFS from entry, expanding both directions, up to maxHops
+            var visited = new Dictionary<string, int>(); // scriptName → hop
+            var queue = new Queue<(string name, int hop)>();
+            visited[entryName] = 0;
+            queue.Enqueue((entryName, 0));
+
+            while (queue.Count > 0)
+            {
+                var (current, hop) = queue.Dequeue();
+                if (hop >= maxHops) continue;
+
+                // Expand outgoing
+                if (outgoing.TryGetValue(current, out var outs))
+                {
+                    foreach (var neighbor in outs)
+                    {
+                        if (!visited.ContainsKey(neighbor))
+                        {
+                            visited[neighbor] = hop + 1;
+                            queue.Enqueue((neighbor, hop + 1));
+                        }
+                    }
+                }
+
+                // Expand incoming
+                if (incoming.TryGetValue(current, out var ins))
+                {
+                    foreach (var neighbor in ins)
+                    {
+                        if (!visited.ContainsKey(neighbor))
+                        {
+                            visited[neighbor] = hop + 1;
+                            queue.Enqueue((neighbor, hop + 1));
+                        }
+                    }
+                }
+            }
+
+            // Build file path lookup via MonoScript assets
+            var filePathMap = new Dictionary<string, string>();
+            var scriptGuids = AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" });
+            foreach (var guid in scriptGuids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var ms = AssetDatabase.LoadAssetAtPath<MonoScript>(path);
+                if (ms == null) continue;
+                var cls = ms.GetClass();
+                if (cls != null && visited.ContainsKey(cls.Name))
+                    filePathMap[cls.Name] = path;
+            }
+
+            // Build type lookup for reached scripts
+            var typeMap = new Dictionary<string, Type>();
+            foreach (var t in allTypes)
+            {
+                if (visited.ContainsKey(t.Name) && !typeMap.ContainsKey(t.Name))
+                    typeMap[t.Name] = t;
+            }
+
+            // Build script info list
+            var scripts = new List<object>();
+            foreach (var kv in visited.OrderBy(k => k.Value).ThenBy(k => k.Key))
+            {
+                var sName = kv.Key;
+                var hop = kv.Value;
+                var type = typeMap.ContainsKey(sName) ? typeMap[sName] : null;
+
+                var dependsOn = outgoing.ContainsKey(sName)
+                    ? outgoing[sName].Where(visited.ContainsKey).OrderBy(n => n).ToList()
+                    : new List<string>();
+                var dependedBy = incoming.ContainsKey(sName)
+                    ? incoming[sName].Where(visited.ContainsKey).OrderBy(n => n).ToList()
+                    : new List<string>();
+
+                string kind = null, baseClass = null;
+                List<object> fields = null;
+                List<string> callbacks = null;
+
+                if (type != null)
+                {
+                    kind = typeof(MonoBehaviour).IsAssignableFrom(type) ? "MonoBehaviour"
+                        : typeof(ScriptableObject).IsAssignableFrom(type) ? "ScriptableObject"
+                        : "Class";
+                    baseClass = type.BaseType?.Name;
+
+                    if (includeDetails)
+                    {
+                        fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                            .Where(f => !f.Name.StartsWith("<"))
+                            .Select(f => (object)new
+                            {
+                                name = f.Name,
+                                type = GetFriendlyTypeName(f.FieldType),
+                                serializable = f.IsPublic || f.GetCustomAttribute<SerializeField>() != null
+                            }).ToList();
+
+                        if (typeof(MonoBehaviour).IsAssignableFrom(type))
+                        {
+                            callbacks = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                                .Where(m => UnityCallbacks.Contains(m.Name))
+                                .Select(m => m.Name).ToList();
+                        }
+                    }
+                }
+
+                scripts.Add(new
+                {
+                    name = sName,
+                    hop,
+                    kind,
+                    baseClass,
+                    filePath = filePathMap.ContainsKey(sName) ? filePathMap[sName] : null,
+                    dependsOn,
+                    dependedBy,
+                    fields,
+                    unityCallbacks = callbacks
+                });
+            }
+
+            // Filter edges to only those between reached scripts
+            var reachedEdges = codeEdges
+                .Where(e => visited.ContainsKey(e.fromObject) && visited.ContainsKey(e.toObject))
+                .Select(e => (object)new { from = e.fromObject, to = e.toObject, type = e.fieldType, detail = e.fieldName })
+                .ToList();
+
+            // Topological sort for suggestedReadOrder (Kahn's algorithm)
+            var readOrder = TopologicalSort(visited.Keys.ToList(), codeEdges.Where(e => visited.ContainsKey(e.fromObject) && visited.ContainsKey(e.toObject)).ToList(), entryName);
+
+            return new
+            {
+                success = true,
+                entryScript = entryName,
+                totalScriptsReached = visited.Count,
+                maxHops,
+                scripts,
+                edges = reachedEdges,
+                suggestedReadOrder = readOrder
+            };
+        }
+
+        /// <summary>
+        /// Kahn's topological sort on dependency subgraph. Leaves with no outgoing edges come first.
+        /// Entry script is placed last. Cycle members appended alphabetically.
+        /// </summary>
+        private static List<string> TopologicalSort(List<string> nodes, List<DependencyEdge> edges, string entryScript)
+        {
+            var inDegree = nodes.ToDictionary(n => n, n => 0);
+            var adj = nodes.ToDictionary(n => n, n => new List<string>());
+
+            foreach (var e in edges)
+            {
+                if (!adj.ContainsKey(e.toObject) || !inDegree.ContainsKey(e.fromObject)) continue;
+                adj[e.toObject].Add(e.fromObject); // dependency flows: if A depends on B, B should be read first → edge B→A
+                inDegree[e.fromObject] = inDegree.TryGetValue(e.fromObject, out var d) ? d + 1 : 1;
+            }
+
+            var queue = new Queue<string>(nodes.Where(n => inDegree[n] == 0).OrderBy(n => n));
+            var result = new List<string>();
+
+            while (queue.Count > 0)
+            {
+                var node = queue.Dequeue();
+                result.Add(node);
+                foreach (var neighbor in adj[node].OrderBy(n => n))
+                {
+                    inDegree[neighbor]--;
+                    if (inDegree[neighbor] == 0) queue.Enqueue(neighbor);
+                }
+            }
+
+            // Remaining nodes are in cycles — append alphabetically
+            var remaining = nodes.Where(n => !result.Contains(n)).OrderBy(n => n).ToList();
+            result.AddRange(remaining);
+
+            // Move entry script to end (read dependencies first, entry last)
+            if (result.Remove(entryScript))
+                result.Add(entryScript);
+
+            return result;
         }
 
         private class DependencyEdge
@@ -1223,12 +1796,17 @@ namespace UnitySkills
             return type.Name;
         }
 
-        [UnitySkill("scene_tag_layer_stats", "Get Tag/Layer usage stats and find potential issues (untagged objects, unused layers)")]
+        [UnitySkill("scene_tag_layer_stats", "Get Tag/Layer usage stats and find potential issues (untagged objects, unused layers)",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "tag", "layer", "statistics", "usage" },
+            Outputs = new[] { "totalObjects", "untaggedCount", "tags", "layers", "emptyDefinedLayers" },
+            ReadOnly = true)]
         public static object SceneTagLayerStats()
         {
-            var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            var allObjects = GameObjectFinder.GetSceneObjects();
             var tagCounts = new Dictionary<string, int>();
             var layerCounts = new Dictionary<string, int>();
+            var usedLayers = new HashSet<int>();
             int untaggedCount = 0;
 
             foreach (var go in allObjects)
@@ -1239,42 +1817,49 @@ namespace UnitySkills
                 var layerName = LayerMask.LayerToName(go.layer);
                 if (string.IsNullOrEmpty(layerName)) layerName = $"Layer {go.layer}";
                 layerCounts[layerName] = layerCounts.TryGetValue(layerName, out var lc) ? lc + 1 : 1;
+                usedLayers.Add(go.layer);
             }
 
             // Find layers with physics interactions that have no objects
-            var usedLayers = allObjects.Select(go => go.layer).Distinct().ToArray();
-            var emptyLayers = Enumerable.Range(0, 32)
-                .Where(i => !string.IsNullOrEmpty(LayerMask.LayerToName(i)) && !usedLayers.Contains(i))
-                .Select(i => LayerMask.LayerToName(i)).ToArray();
+            var emptyLayers = new List<string>();
+            for (int i = 0; i < 32; i++)
+            {
+                var layerName = LayerMask.LayerToName(i);
+                if (!string.IsNullOrEmpty(layerName) && !usedLayers.Contains(i))
+                    emptyLayers.Add(layerName);
+            }
 
-            return new { success = true, totalObjects = allObjects.Length, untaggedCount,
+            return new { success = true, totalObjects = allObjects.Count, untaggedCount,
                 tags = tagCounts.OrderByDescending(kv => kv.Value).Select(kv => new { tag = kv.Key, count = kv.Value }).ToArray(),
                 layers = layerCounts.OrderByDescending(kv => kv.Value).Select(kv => new { layer = kv.Key, count = kv.Value }).ToArray(),
-                emptyDefinedLayers = emptyLayers };
+                emptyDefinedLayers = emptyLayers.ToArray() };
         }
 
-        [UnitySkill("scene_performance_hints", "Diagnose scene performance issues with prioritized actionable suggestions")]
+        [UnitySkill("scene_performance_hints", "Diagnose scene performance issues with prioritized actionable suggestions",
+            Category = SkillCategory.Perception, Operation = SkillOperation.Analyze,
+            Tags = new[] { "performance", "optimization", "diagnostics", "hints" },
+            Outputs = new[] { "hintCount", "hints" },
+            ReadOnly = true)]
         public static object ScenePerformanceHints()
         {
             var hints = new List<object>();
-            var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
 
             // 1. Realtime shadow lights
-            var lights = UnityEngine.Object.FindObjectsOfType<Light>();
+            var lights = FindHelper.FindAll<Light>();
             var shadowLights = lights.Where(l => l.shadows != LightShadows.None).ToArray();
             if (shadowLights.Length > 4)
                 hints.Add(new { priority = 1, category = "Lighting", issue = $"{shadowLights.Length} shadow-casting lights",
                     suggestion = "Reduce to ≤4 or use baked lighting", fixSkill = "light_set_properties" });
 
             // 2. Non-static renderers
-            var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
+            var renderers = FindHelper.FindAll<Renderer>();
             int nonStaticCount = renderers.Count(r => !r.gameObject.isStatic);
             if (nonStaticCount > 100)
                 hints.Add(new { priority = 2, category = "Batching", issue = $"{nonStaticCount} non-static renderers",
                     suggestion = "Mark static objects with optimize_set_static_flags", fixSkill = "optimize_set_static_flags" });
 
             // 3. High-poly meshes without LOD
-            var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>();
+            var meshFilters = FindHelper.FindAll<MeshFilter>();
             var highPoly = meshFilters.Where(mf => mf.sharedMesh != null && mf.sharedMesh.triangles.Length / 3 > 10000
                 && mf.GetComponent<LODGroup>() == null).ToArray();
             if (highPoly.Length > 0)
@@ -1290,7 +1875,7 @@ namespace UnitySkills
                     suggestion = "Consolidate materials", fixSkill = "optimize_find_duplicate_materials" });
 
             // 5. Particle systems
-            var particles = UnityEngine.Object.FindObjectsOfType<ParticleSystem>();
+            var particles = FindHelper.FindAll<ParticleSystem>();
             if (particles.Length > 20)
                 hints.Add(new { priority = 3, category = "Particles", issue = $"{particles.Length} particle systems",
                     suggestion = "Consider reducing or pooling particle systems", fixSkill = (string)null });

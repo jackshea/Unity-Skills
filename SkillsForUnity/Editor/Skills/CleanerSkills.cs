@@ -12,61 +12,61 @@ namespace UnitySkills
     /// </summary>
     public static class CleanerSkills
     {
-        [UnitySkill("cleaner_find_unused_assets", "Find potentially unused assets of a specific type")]
+        [UnitySkill("cleaner_find_unused_assets", "Find potentially unused assets of a specific type",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Analyze,
+            Tags = new[] { "cleaner", "unused", "assets", "dependencies" },
+            Outputs = new[] { "assetType", "potentiallyUnusedCount", "assets" },
+            ReadOnly = true)]
         public static object CleanerFindUnusedAssets(
             string assetType = "Material",
             string searchPath = "Assets",
             int limit = 100)
         {
+            if (Validate.SafePath(searchPath, "searchPath") is object pathErr) return pathErr;
+
             var filter = $"t:{assetType}";
             var guids = AssetDatabase.FindAssets(filter, new[] { searchPath });
             var potentiallyUnused = new List<object>();
 
-            // Get all scene paths in build settings
-            var scenePaths = EditorBuildSettings.scenes
-                .Where(s => s.enabled)
-                .Select(s => s.path)
-                .ToHashSet();
+            var candidatePaths = guids
+                .Select(AssetDatabase.GUIDToAssetPath)
+                .Where(path => !string.IsNullOrEmpty(path))
+                .ToArray();
+            var candidateSet = new HashSet<string>(candidatePaths, System.StringComparer.OrdinalIgnoreCase);
+            var referencedCandidates = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 
-            foreach (var guid in guids)
+            foreach (var assetGuid in AssetDatabase.FindAssets("t:Object", new[] { searchPath }))
+            {
+                var assetPath = AssetDatabase.GUIDToAssetPath(assetGuid);
+                if (string.IsNullOrEmpty(assetPath) || assetPath.Contains("/Resources/"))
+                    continue;
+
+                foreach (var dependency in AssetDatabase.GetDependencies(assetPath, true))
+                {
+                    if (dependency == assetPath)
+                        continue;
+
+                    if (candidateSet.Contains(dependency))
+                        referencedCandidates.Add(dependency);
+                }
+            }
+
+            foreach (var path in candidatePaths)
             {
                 if (potentiallyUnused.Count >= limit) break;
 
-                var path = AssetDatabase.GUIDToAssetPath(guid);
-                
-                // Skip if in Resources folder (always included)
-                if (path.Contains("/Resources/")) continue;
+                if (path.Contains("/Resources/") || referencedCandidates.Contains(path))
+                    continue;
 
-                // Check if any other asset depends on this
-                var dependents = AssetDatabase.GetDependencies(path, false);
-                bool isReferenced = false;
-
-                // Check all assets in project for references
-                var allAssetGuids = AssetDatabase.FindAssets("t:Object", new[] { searchPath });
-                foreach (var assetGuid in allAssetGuids.Take(500)) // Limit for performance
+                var asset = AssetDatabase.LoadMainAssetAtPath(path);
+                var fileInfo = new FileInfo(path);
+                potentiallyUnused.Add(new
                 {
-                    if (assetGuid == guid) continue;
-                    var assetPath = AssetDatabase.GUIDToAssetPath(assetGuid);
-                    var deps = AssetDatabase.GetDependencies(assetPath, true);
-                    if (deps.Contains(path))
-                    {
-                        isReferenced = true;
-                        break;
-                    }
-                }
-
-                if (!isReferenced)
-                {
-                    var asset = AssetDatabase.LoadMainAssetAtPath(path);
-                    var fileInfo = new FileInfo(path);
-                    potentiallyUnused.Add(new
-                    {
-                        path,
-                        name = asset?.name,
-                        type = asset?.GetType().Name,
-                        sizeBytes = fileInfo.Exists ? fileInfo.Length : 0
-                    });
-                }
+                    path,
+                    name = asset?.name,
+                    type = asset?.GetType().Name,
+                    sizeBytes = fileInfo.Exists ? fileInfo.Length : 0
+                });
             }
 
             return new
@@ -80,7 +80,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("cleaner_find_duplicates", "Find duplicate files by content hash")]
+        [UnitySkill("cleaner_find_duplicates", "Find duplicate files by content hash",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Analyze,
+            Tags = new[] { "cleaner", "duplicates", "hash", "files" },
+            Outputs = new[] { "duplicateGroupCount", "totalWastedBytes", "totalWastedMB", "groups" },
+            ReadOnly = true)]
         public static object CleanerFindDuplicates(
             string assetType = "Texture2D",
             string searchPath = "Assets",
@@ -154,7 +158,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("cleaner_find_missing_references", "Find components with missing script or asset references")]
+        [UnitySkill("cleaner_find_missing_references", "Find components with missing script or asset references",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Analyze,
+            Tags = new[] { "cleaner", "missing", "references", "scripts" },
+            Outputs = new[] { "issueCount", "missingScripts", "missingReferences", "issues" },
+            ReadOnly = true)]
         public static object CleanerFindMissingReferences(bool includeInactive = true)
         {
             var issues = new List<object>();
@@ -162,7 +170,7 @@ namespace UnitySkills
                 ? Resources.FindObjectsOfTypeAll<GameObject>()
                     .Where(go => !EditorUtility.IsPersistent(go) && go.hideFlags == HideFlags.None)
                     .ToArray()
-                : Object.FindObjectsOfType<GameObject>();
+                : FindHelper.FindAll<GameObject>();
 
             foreach (var go in allObjects)
             {
@@ -176,7 +184,7 @@ namespace UnitySkills
                         {
                             type = "MissingScript",
                             gameObject = go.name,
-                            path = GetGameObjectPath(go),
+                            path = GameObjectFinder.GetPath(go),
                             componentIndex = i
                         });
                     }
@@ -197,7 +205,7 @@ namespace UnitySkills
                                 {
                                     type = "MissingReference",
                                     gameObject = go.name,
-                                    path = GetGameObjectPath(go),
+                                    path = GameObjectFinder.GetPath(go),
                                     component = component.GetType().Name,
                                     property = prop.propertyPath
                                 });
@@ -227,7 +235,10 @@ namespace UnitySkills
             public long TotalBytes;
         }
 
-        [UnitySkill("cleaner_delete_assets", "Delete specified assets. Step 1: Call without confirmToken to preview. Step 2: Call with confirmToken to execute.")]
+        [UnitySkill("cleaner_delete_assets", "Delete specified assets. Step 1: Call without confirmToken to preview. Step 2: Call with confirmToken to execute.", TracksWorkflow = true,
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Delete,
+            Tags = new[] { "cleaner", "delete", "assets", "confirm" },
+            Outputs = new[] { "action", "deletedCount", "totalMB", "confirmToken", "assetsToDelete" })]
         public static object CleanerDeleteAssets(
             string[] paths = null,
             string confirmToken = null)
@@ -260,7 +271,7 @@ namespace UnitySkills
                     var existed = File.Exists(path) || Directory.Exists(path);
                     if (existed)
                     {
-                        // 删除前记录资产状态（用于恢复）
+                        // Workflow snapshot comment normalized.
                         var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
                         if (asset != null) WorkflowManager.SnapshotObject(asset);
                         AssetDatabase.DeleteAsset(path);
@@ -292,6 +303,19 @@ namespace UnitySkills
 
             foreach (var path in paths)
             {
+                if (Validate.SafePath(path, "path", isDelete: true) is object pathErr)
+                {
+                    previewResults.Add(new
+                    {
+                        path,
+                        exists = false,
+                        sizeBytes = 0L,
+                        sizeMB = 0d,
+                        error = ((dynamic)pathErr).error
+                    });
+                    continue;
+                }
+
                 var fileInfo = new FileInfo(path);
                 var exists = File.Exists(path) || Directory.Exists(path);
                 var size = fileInfo.Exists ? fileInfo.Length : 0;
@@ -317,7 +341,7 @@ namespace UnitySkills
             };
 
             // Clean up old tokens
-            var expiredTokens = _pendingDeletes.Where(kv => (System.DateTime.Now - kv.Value.CreatedAt).TotalMinutes > 10).Select(kv => kv.Key).ToList();
+            var expiredTokens = _pendingDeletes.Where(kv => (System.DateTime.Now - kv.Value.CreatedAt).TotalMinutes > 5).Select(kv => kv.Key).ToList();
             foreach (var expired in expiredTokens) _pendingDeletes.Remove(expired);
 
             return new
@@ -335,9 +359,15 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("cleaner_get_asset_usage", "Find what objects reference a specific asset")]
+        [UnitySkill("cleaner_get_asset_usage", "Find what objects reference a specific asset",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Query,
+            Tags = new[] { "cleaner", "usage", "references", "dependencies" },
+            Outputs = new[] { "asset", "usedByCount", "usedBy" },
+            RequiresInput = new[] { "assetPath" },
+            ReadOnly = true)]
         public static object CleanerGetAssetUsage(string assetPath, int limit = 50)
         {
+            if (Validate.SafePath(assetPath, "assetPath") is object pathErr) return pathErr;
             if (!File.Exists(assetPath))
                 return new { success = false, error = $"Asset not found: {assetPath}" };
 
@@ -380,7 +410,11 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("cleaner_find_empty_folders", "Find empty folders in the project")]
+        [UnitySkill("cleaner_find_empty_folders", "Find empty folders in the project",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Analyze,
+            Tags = new[] { "cleaner", "empty", "folders", "project" },
+            Outputs = new[] { "count", "folders" },
+            ReadOnly = true)]
         public static object CleanerFindEmptyFolders(string searchPath = "Assets")
         {
             var empty = new List<string>();
@@ -400,7 +434,11 @@ namespace UnitySkills
             return false;
         }
 
-        [UnitySkill("cleaner_find_large_assets", "Find largest assets by file size")]
+        [UnitySkill("cleaner_find_large_assets", "Find largest assets by file size",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Analyze,
+            Tags = new[] { "cleaner", "large", "assets", "size" },
+            Outputs = new[] { "count", "assets" },
+            ReadOnly = true)]
         public static object CleanerFindLargeAssets(string searchPath = "Assets", int limit = 20, long minSizeBytes = 0)
         {
             var files = Directory.GetFiles(searchPath, "*.*", SearchOption.AllDirectories)
@@ -409,12 +447,21 @@ namespace UnitySkills
                 .Where(fi => fi.Length > minSizeBytes)
                 .OrderByDescending(fi => fi.Length)
                 .Take(limit)
-                .Select(fi => new { path = fi.FullName.Replace("\\", "/"), sizeBytes = fi.Length, sizeMB = fi.Length / (1024.0 * 1024.0) })
+                .Select(fi =>
+                {
+                    var relativePath = fi.FullName.Replace("\\", "/");
+                    var assetsIndex = relativePath.IndexOf("Assets/");
+                    if (assetsIndex >= 0) relativePath = relativePath.Substring(assetsIndex);
+                    return new { path = relativePath, sizeBytes = fi.Length, sizeMB = fi.Length / (1024.0 * 1024.0) };
+                })
                 .ToArray();
             return new { success = true, count = files.Length, assets = files };
         }
 
-        [UnitySkill("cleaner_delete_empty_folders", "Delete all empty folders")]
+        [UnitySkill("cleaner_delete_empty_folders", "Delete all empty folders", TracksWorkflow = true,
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Delete,
+            Tags = new[] { "cleaner", "delete", "empty", "folders" },
+            Outputs = new[] { "deleted", "total" })]
         public static object CleanerDeleteEmptyFolders(string searchPath = "Assets")
         {
             var empty = new List<string>();
@@ -428,12 +475,15 @@ namespace UnitySkills
             return new { success = true, deleted, total = empty.Count };
         }
 
-        [UnitySkill("cleaner_fix_missing_scripts", "Remove missing script components from GameObjects")]
+        [UnitySkill("cleaner_fix_missing_scripts", "Remove missing script components from GameObjects", TracksWorkflow = true,
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Execute | SkillOperation.Delete,
+            Tags = new[] { "cleaner", "fix", "missing", "scripts" },
+            Outputs = new[] { "removedComponents" })]
         public static object CleanerFixMissingScripts(bool includeInactive = true)
         {
             var allObjects = includeInactive
                 ? Resources.FindObjectsOfTypeAll<GameObject>().Where(go => !EditorUtility.IsPersistent(go) && go.hideFlags == HideFlags.None).ToArray()
-                : Object.FindObjectsOfType<GameObject>();
+                : FindHelper.FindAll<GameObject>();
             int totalRemoved = 0;
             foreach (var go in allObjects)
             {
@@ -448,7 +498,12 @@ namespace UnitySkills
             return new { success = true, removedComponents = totalRemoved };
         }
 
-        [UnitySkill("cleaner_get_dependency_tree", "Get dependency tree for an asset")]
+        [UnitySkill("cleaner_get_dependency_tree", "Get dependency tree for an asset",
+            Category = SkillCategory.Cleaner, Operation = SkillOperation.Query,
+            Tags = new[] { "cleaner", "dependencies", "tree", "asset" },
+            Outputs = new[] { "assetPath", "dependencyCount", "dependencies" },
+            RequiresInput = new[] { "assetPath" },
+            ReadOnly = true)]
         public static object CleanerGetDependencyTree(string assetPath, bool recursive = true)
         {
             if (!File.Exists(assetPath) && !Directory.Exists(assetPath))
@@ -460,16 +515,5 @@ namespace UnitySkills
             return new { success = true, assetPath, dependencyCount = deps.Length, dependencies = deps };
         }
 
-        private static string GetGameObjectPath(GameObject go)
-        {
-            var path = go.name;
-            var parent = go.transform.parent;
-            while (parent != null)
-            {
-                path = parent.name + "/" + path;
-                parent = parent.parent;
-            }
-            return path;
-        }
     }
 }

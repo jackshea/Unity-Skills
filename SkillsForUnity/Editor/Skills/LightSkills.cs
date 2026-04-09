@@ -9,7 +9,11 @@ namespace UnitySkills
     /// </summary>
     public static class LightSkills
     {
-        [UnitySkill("light_create", "Create a new light (Directional, Point, Spot, Area)")]
+        [UnitySkill("light_create", "Create a new light (Directional, Point, Spot, Area)",
+            Category = SkillCategory.Light, Operation = SkillOperation.Create,
+            Tags = new[] { "light", "create", "illumination", "scene" },
+            Outputs = new[] { "name", "instanceId", "lightType", "intensity", "shadows" },
+            TracksWorkflow = true)]
         public static object LightCreate(
             string name = "New Light",
             string lightType = "Point",
@@ -76,7 +80,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("light_set_properties", "Set light properties (supports name/instanceId/path)")]
+        [UnitySkill("light_set_properties", "Set light properties (supports name/instanceId/path)",
+            Category = SkillCategory.Light, Operation = SkillOperation.Modify,
+            Tags = new[] { "light", "color", "intensity", "shadow" },
+            Outputs = new[] { "lightType", "color", "intensity", "range", "shadows" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object LightSetProperties(
             string name = null, int instanceId = 0, string path = null,
             float? r = null, float? g = null, float? b = null,
@@ -128,6 +137,8 @@ namespace UnitySkills
                     case "none":
                         light.shadows = LightShadows.None;
                         break;
+                    default:
+                        return new { warning = $"Unknown shadow type: '{shadows}'. Valid values: hard, soft, none" };
                 }
             }
 
@@ -144,7 +155,12 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("light_get_info", "Get information about a light (supports name/instanceId/path)")]
+        [UnitySkill("light_get_info", "Get information about a light (supports name/instanceId/path)",
+            Category = SkillCategory.Light, Operation = SkillOperation.Query,
+            Tags = new[] { "light", "info", "inspect" },
+            Outputs = new[] { "lightType", "color", "intensity", "range", "shadows", "enabled" },
+            RequiresInput = new[] { "gameObject" },
+            ReadOnly = true)]
         public static object LightGetInfo(string name = null, int instanceId = 0, string path = null)
         {
             var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
@@ -171,10 +187,14 @@ namespace UnitySkills
             };
         }
 
-        [UnitySkill("light_find_all", "Find all lights in the scene")]
+        [UnitySkill("light_find_all", "Find all lights in the scene",
+            Category = SkillCategory.Light, Operation = SkillOperation.Query,
+            Tags = new[] { "light", "find", "search", "scene" },
+            Outputs = new[] { "count", "lights" },
+            ReadOnly = true)]
         public static object LightFindAll(string lightType = null, int limit = 50)
         {
-            var lights = Object.FindObjectsOfType<Light>();
+            var lights = FindHelper.FindAll<Light>();
 
             if (!string.IsNullOrEmpty(lightType))
             {
@@ -195,7 +215,12 @@ namespace UnitySkills
             return new { count = results.Length, lights = results };
         }
 
-        [UnitySkill("light_set_enabled", "Enable or disable a light (supports name/instanceId/path). Returns: {success, name, enabled}")]
+        [UnitySkill("light_set_enabled", "Enable or disable a light (supports name/instanceId/path). Returns: {success, name, enabled}",
+            Category = SkillCategory.Light, Operation = SkillOperation.Modify,
+            Tags = new[] { "light", "enable", "disable", "toggle" },
+            Outputs = new[] { "name", "enabled" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object LightSetEnabled(string name = null, int instanceId = 0, string path = null, bool enabled = true)
         {
             var (go, error) = GameObjectFinder.FindOrError(name, instanceId, path);
@@ -212,7 +237,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, enabled };
         }
 
-        [UnitySkill("light_set_enabled_batch", "Enable/disable multiple lights in one call (Efficient). items: JSON array of {name, instanceId, path, enabled}")]
+        [UnitySkill("light_set_enabled_batch", "Enable/disable multiple lights in one call (Efficient). items: JSON array of {name, instanceId, path, enabled}",
+            Category = SkillCategory.Light, Operation = SkillOperation.Modify,
+            Tags = new[] { "light", "enable", "batch", "toggle" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            RequiresInput = new[] { "gameObject" })]
         public static object LightSetEnabledBatch(string items)
         {
             return BatchExecutor.Execute<BatchLightEnabledItem>(items, item =>
@@ -238,7 +267,11 @@ namespace UnitySkills
             public bool enabled { get; set; }
         }
 
-        [UnitySkill("light_set_properties_batch", "Set properties for multiple lights in one call (Efficient). items: JSON array of {name, instanceId, r, g, b, intensity, range, shadows}")]
+        [UnitySkill("light_set_properties_batch", "Set properties for multiple lights in one call (Efficient). items: JSON array of {name, instanceId, r, g, b, intensity, range, shadows}",
+            Category = SkillCategory.Light, Operation = SkillOperation.Modify,
+            Tags = new[] { "light", "batch", "properties", "color" },
+            Outputs = new[] { "totalCount", "successCount", "results" },
+            RequiresInput = new[] { "gameObject" })]
         public static object LightSetPropertiesBatch(string items)
         {
             return BatchExecutor.Execute<BatchLightPropsItem>(items, item =>
@@ -258,7 +291,8 @@ namespace UnitySkills
                     light.color = new Color(item.r ?? c.r, item.g ?? c.g, item.b ?? c.b);
                 }
                 if (item.intensity.HasValue) light.intensity = item.intensity.Value;
-                if (item.range.HasValue) light.range = item.range.Value;
+                if (item.range.HasValue && (light.type == LightType.Point || light.type == LightType.Spot))
+                    light.range = item.range.Value;
                 if (!string.IsNullOrEmpty(item.shadows))
                 {
                     switch (item.shadows.ToLower())
@@ -266,6 +300,7 @@ namespace UnitySkills
                         case "hard": light.shadows = LightShadows.Hard; break;
                         case "soft": light.shadows = LightShadows.Soft; break;
                         case "none": light.shadows = LightShadows.None; break;
+                        default: throw new System.Exception($"Unknown shadow type: '{item.shadows}'. Valid values: hard, soft, none");
                     }
                 }
 
@@ -286,7 +321,12 @@ namespace UnitySkills
             public string shadows { get; set; }
         }
 
-        [UnitySkill("light_add_probe_group", "Add a Light Probe Group to a GameObject. Optional grid layout: gridX/gridY/gridZ (count per axis), spacingX/spacingY/spacingZ (meters between probes)")]
+        [UnitySkill("light_add_probe_group", "Add a Light Probe Group to a GameObject. Optional grid layout: gridX/gridY/gridZ (count per axis), spacingX/spacingY/spacingZ (meters between probes)",
+            Category = SkillCategory.Light, Operation = SkillOperation.Create | SkillOperation.Modify,
+            Tags = new[] { "lightProbe", "gi", "globalIllumination", "grid" },
+            Outputs = new[] { "gameObject", "probeCount", "existed", "hasGrid" },
+            RequiresInput = new[] { "gameObject" },
+            TracksWorkflow = true)]
         public static object LightAddProbeGroup(string name = null, int instanceId = 0, string path = null,
             int gridX = 0, int gridY = 0, int gridZ = 0,
             float spacingX = 2f, float spacingY = 1.5f, float spacingZ = 2f)
@@ -319,7 +359,11 @@ namespace UnitySkills
                 existed, hasGrid = gridX > 0 && gridY > 0 && gridZ > 0 };
         }
 
-        [UnitySkill("light_add_reflection_probe", "Create a Reflection Probe at a position")]
+        [UnitySkill("light_add_reflection_probe", "Create a Reflection Probe at a position",
+            Category = SkillCategory.Light, Operation = SkillOperation.Create,
+            Tags = new[] { "reflectionProbe", "reflection", "environment", "gi" },
+            Outputs = new[] { "name", "instanceId", "resolution", "size" },
+            TracksWorkflow = true)]
         public static object LightAddReflectionProbe(string probeName = "ReflectionProbe", float x = 0, float y = 1, float z = 0,
             float sizeX = 10, float sizeY = 10, float sizeZ = 10, int resolution = 256)
         {
@@ -335,7 +379,11 @@ namespace UnitySkills
             return new { success = true, name = go.name, instanceId = go.GetInstanceID(), resolution, size = new { x = sizeX, y = sizeY, z = sizeZ } };
         }
 
-        [UnitySkill("light_get_lightmap_settings", "Get Lightmap baking settings")]
+        [UnitySkill("light_get_lightmap_settings", "Get Lightmap baking settings",
+            Category = SkillCategory.Light, Operation = SkillOperation.Query,
+            Tags = new[] { "lightmap", "baking", "gi", "settings" },
+            Outputs = new[] { "bakedGI", "realtimeGI", "lightmapSize", "isRunning", "lightmapCount" },
+            ReadOnly = true)]
         public static object LightGetLightmapSettings()
         {
             return new
